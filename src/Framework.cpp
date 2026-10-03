@@ -150,7 +150,7 @@ Framework::Framework(HMODULE module)
     , m_game_module{GetModuleHandle(0)}
     {
 
-#ifndef _DEBUG
+#if !defined(_DEBUG) && !defined(VR_ENABLE_LOGGING)
     // Use null logger if possible
     auto null_sink = std::make_shared<spdlog::sinks::null_sink_mt>();
     m_logger = std::make_shared<spdlog::logger>("null_logger", null_sink);
