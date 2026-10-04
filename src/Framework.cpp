@@ -1153,6 +1153,10 @@ void Framework::invalidate_device_objects() {
 void Framework::draw_ui() {
     std::lock_guard _{m_input_mutex};
 
+#ifndef VR_DEV_OVERLAY
+    m_draw_ui = false;
+#endif
+
     ImGui::GetIO().MouseDrawCursor = m_draw_ui || VRConfig::get()->is_always_show_cursor();
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange; // causes bugs with the cursor
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
