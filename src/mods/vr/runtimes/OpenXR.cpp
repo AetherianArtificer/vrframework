@@ -124,6 +124,14 @@ VRRuntime::Error OpenXR::update_poses(int frame) {
         return (VRRuntime::Error)result;
     }
 
+    if (this->floor_space != XR_NULL_HANDLE) {
+        XrSpaceLocation floor_view{XR_TYPE_SPACE_LOCATION};
+        if (xrLocateSpace(this->view_space, this->floor_space, display_time, &floor_view) == XR_SUCCESS &&
+            (floor_view.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0) {
+            this->floor_eye_height = floor_view.pose.position.y;
+        }
+    }
+
     for (auto& hand : this->hands) {
         hand.location.next = &hand.velocity;
         result = xrLocateSpace(hand.space, this->stage_space, display_time, &hand.location);
@@ -131,6 +139,13 @@ VRRuntime::Error OpenXR::update_poses(int frame) {
         if (result != XR_SUCCESS) {
             spdlog::error("[VR] xrLocateSpace for hand space failed: {}", this->get_result_string(result));
             return (VRRuntime::Error)result;
+        }
+
+        if (hand.grip_space != XR_NULL_HANDLE) {
+            hand.grip_location.next = nullptr;
+            if (xrLocateSpace(hand.grip_space, this->stage_space, display_time, &hand.grip_location) != XR_SUCCESS) {
+                hand.grip_location.locationFlags = 0;
+            }
         }
     }
 
@@ -744,6 +759,37 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
         return "json missing pose action";
     }
 
+    // Grip pose action, independent of the action manifest.
+    {
+        XrActionCreateInfo grip_create_info{XR_TYPE_ACTION_CREATE_INFO};
+        strcpy(grip_create_info.actionName, "grippose");
+        strcpy(grip_create_info.localizedActionName, "Grip Pose");
+        grip_create_info.actionType = XR_ACTION_TYPE_POSE_INPUT;
+        grip_create_info.countSubactionPaths = (uint32_t)hand_paths.size();
+        grip_create_info.subactionPaths = hand_paths.data();
+
+        XrAction grip_action{XR_NULL_HANDLE};
+        if (xrCreateAction(this->action_set.handle, &grip_create_info, &grip_action) == XR_SUCCESS) {
+            this->action_set.actions.push_back(grip_action);
+            this->action_set.pose_actions.insert(grip_action);
+            this->action_set.action_map["grippose"] = grip_action;
+            this->action_set.action_names[grip_action] = "grippose";
+
+            for (auto i = 0; i < 2; ++i) {
+                XrPath p{XR_NULL_PATH};
+                const auto path = i == VRRuntime::Hand::LEFT ? "/user/hand/left/input/grip/pose" : "/user/hand/right/input/grip/pose";
+                if (xrStringToPath(this->instance, path, &p) != XR_SUCCESS) {
+                    continue;
+                }
+                for (const auto& controller : s_supported_controllers) {
+                    attempt_add_binding(controller, { grip_action, p });
+                }
+            }
+        } else {
+            spdlog::error("[VR] Failed to create grip pose action");
+        }
+    }
+
     // Check for json files that will override the default suggested bindings
     for (const auto& controller : s_supported_controllers) {
         // Create default action vector associations
@@ -847,6 +893,16 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
 
         if (auto result = xrCreateActionSpace(this->session, &action_space_create_info, &this->hands[i].space); result != XR_SUCCESS) {
             return "xrCreateActionSpace failed (" + std::to_string(i) + ")" + this->get_result_string(result);
+        }
+
+        if (this->action_set.action_map.contains("grippose")) {
+            XrActionSpaceCreateInfo grip_space_info{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+            grip_space_info.action = this->action_set.action_map["grippose"];
+            grip_space_info.subactionPath = this->hands[i].path;
+            grip_space_info.poseInActionSpace.orientation.w = 1.0f;
+            if (xrCreateActionSpace(this->session, &grip_space_info, &this->hands[i].grip_space) != XR_SUCCESS) {
+                this->hands[i].grip_space = XR_NULL_HANDLE;
+            }
         }
     }
 

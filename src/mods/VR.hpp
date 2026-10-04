@@ -227,6 +227,10 @@ public:
     Vector4f get_angular_velocity(uint32_t index)  const;
     Matrix4x4f get_rotation(uint32_t index)  const;
     Matrix4x4f get_transform(uint32_t index) const;
+    // Controller grip pose (palm), same space as get_transform; falls back to the aim pose.
+    Matrix4x4f get_grip_transform(uint32_t index) const;
+    // Eye height above the floor in metres (OpenXR stage space), or a negative value when unavailable.
+    float get_floor_eye_height() const;
     vr::HmdMatrix34_t get_raw_transform(uint32_t index) const;
 
     const auto& get_eyes() const {

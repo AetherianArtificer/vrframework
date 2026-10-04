@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <unordered_set>
 
 #include <d3d11.h>
@@ -191,6 +192,9 @@ public:
 
     XrSession session{XR_NULL_HANDLE};
     XrSpace stage_space{XR_NULL_HANDLE};
+    // Floor-level space, used only to measure the eye height above the floor.
+    XrSpace floor_space{XR_NULL_HANDLE};
+    std::atomic<float> floor_eye_height{ -1.0f };
     XrSpace view_space{XR_NULL_HANDLE}; // for generating view matrices
     XrSystemId system{XR_NULL_SYSTEM_ID};
     XrFormFactor form_factor{XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY};
@@ -255,6 +259,10 @@ public:
         XrPath path{XR_NULL_PATH};
         XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
         XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
+
+        // Grip pose: origin in the palm, -Z along the held object's axis.
+        XrSpace grip_space{XR_NULL_HANDLE};
+        XrSpaceLocation grip_location{XR_TYPE_SPACE_LOCATION};
         
         // interaction profile -> action -> path map
         struct InteractionProfile {

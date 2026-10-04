@@ -384,6 +384,16 @@ std::optional<std::string> VR::initialize_openxr() {
         }
     }
 
+    if (m_openxr->floor_space == XR_NULL_HANDLE) {
+        XrReferenceSpaceCreateInfo space_create_info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+        space_create_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+        space_create_info.poseInReferenceSpace.orientation.w = 1.0f;
+        if (xrCreateReferenceSpace(m_openxr->session, &space_create_info, &m_openxr->floor_space) != XR_SUCCESS) {
+            m_openxr->floor_space = XR_NULL_HANDLE;
+            spdlog::warn("[VR] No floor-level stage space; eye height unavailable");
+        }
+    }
+
     if (m_openxr->view_space == XR_NULL_HANDLE) {
         XrReferenceSpaceCreateInfo space_create_info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
         space_create_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
@@ -1514,6 +1524,25 @@ Matrix4x4f VR::get_transform(uint32_t index) const {
     }
 
     return glm::identity<Matrix4x4f>();
+}
+
+float VR::get_floor_eye_height() const {
+    return get_runtime()->is_openxr() ? m_openxr->floor_eye_height.load() : -1.0f;
+}
+
+Matrix4x4f VR::get_grip_transform(uint32_t index) const {
+    if (get_runtime()->is_openxr() && index > 0) {
+        std::shared_lock _{ get_runtime()->pose_mtx };
+        const auto hand = index == VRRuntime::Hand::LEFT + 1 ? VRRuntime::Hand::LEFT : VRRuntime::Hand::RIGHT;
+        const auto& location = m_openxr->hands[hand].grip_location;
+        constexpr auto valid = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+        if ((location.locationFlags & valid) == valid) {
+            auto mat = Matrix4x4f{*(glm::quat*)&location.pose.orientation};
+            mat[3] = Vector4f{*(Vector3f*)&location.pose.position, 1.0f};
+            return mat;
+        }
+    }
+    return get_transform(index);
 }
 
 vr::HmdMatrix34_t VR::get_raw_transform(uint32_t index) const {
