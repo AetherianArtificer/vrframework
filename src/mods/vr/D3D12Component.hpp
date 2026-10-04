@@ -11,6 +11,9 @@
 
 #include <../../../_deps/directxtk12-src/Inc/GraphicsMemory.h>
 #include <../../../_deps/directxtk12-src/Inc/SpriteBatch.h>
+#include <../../../_deps/directxtk12-src/Inc/DescriptorHeap.h>
+
+#include "mods/vr/d3d12/CommandContext.hpp"
 
 #include "mods/vr/d3d12/ResourceCopier.hpp"
 #include "mods/vr/d3d12/TextureContext.hpp"
@@ -45,6 +48,7 @@ private:
     void setup();
     void setup_sprite_batch_pso(DXGI_FORMAT output_format);
     void render_srv_to_rtv(ID3D12GraphicsCommandList* command_list, const d3d12::TextureContext& src, const d3d12::TextureContext& dst, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state);
+    void draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer);
 
     template <typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
 
@@ -55,6 +59,13 @@ private:
 
     std::unique_ptr<DirectX::DX12::GraphicsMemory> m_graphics_memory{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_sprite_batch{};
+
+    d3d12::CommandContext                       m_vignette_commands{};
+    ComPtr<ID3D12Resource>                      m_vignette_texture{};
+    std::unique_ptr<DirectX::DescriptorHeap>    m_vignette_srv_heap{};
+    std::unique_ptr<DirectX::DescriptorHeap>    m_vignette_rtv_heap{};
+    std::unique_ptr<DirectX::DX12::SpriteBatch> m_vignette_batch{};
+    DXGI_FORMAT                                 m_vignette_format{ DXGI_FORMAT_UNKNOWN };
 
     // Mimicking what OpenXR does.
     struct OpenVR {

@@ -96,6 +96,10 @@ public:
     void on_end_rendering(void* entry);
 //    void on_pre_wait_rendering(void* entry);
     void on_wait_rendering(int frame);
+    // 0 = off, 1 = strongest; drawn over each eye image before submission.
+    void set_comfort_vignette(float strength) { m_comfort_vignette = strength; }
+    float get_comfort_vignette() const { return m_comfort_vignette; }
+
     auto get_backbuffer_size() const {
         if( m_is_d3d12) {
             return m_d3d12.get_backbuffer_size();
@@ -552,6 +556,7 @@ protected:
     // options
 public:
     int m_engine_frame_count{0};
+    std::atomic<float> m_comfort_vignette{0.0f};
     int m_render_frame_count{0};
     int m_presenter_frame_count{0};
     bool m_skip_next_present{false};

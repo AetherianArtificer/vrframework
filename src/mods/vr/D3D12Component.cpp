@@ -45,6 +45,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         return vr::VRCompositorError_None;
     }
 
+    if (vr->is_hmd_active()) {
+        draw_comfort_vignette(vr, backbuffer.Get());
+    }
+
     if (!m_backbuffer_is_8bit) {
         auto command_list = m_backbuffer_copy.commands.cmd_list.Get();
         m_backbuffer_copy.commands.wait(INFINITE);
@@ -313,6 +317,8 @@ void D3D12Component::on_reset(VR* vr) {
     m_backbuffer_copy.reset();
     m_converted_eye_tex.reset();
     m_graphics_memory.reset();
+    m_vignette_batch.reset();
+    m_vignette_format = DXGI_FORMAT_UNKNOWN;
 
     if (runtime->is_openxr() && runtime->loaded) {
         if (m_openxr.last_resolution[0] != vr->get_hmd_width() || m_openxr.last_resolution[1] != vr->get_hmd_height()) {
@@ -440,6 +446,106 @@ void D3D12Component::setup() {
 
     spdlog::info("[VR] d3d12 textures have been setup");
     m_force_reset = false;
+}
+
+void D3D12Component::draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer) {
+    const float strength = vr->get_comfort_vignette();
+    if (strength <= 0.01f || backbuffer == nullptr) {
+        return;
+    }
+
+    auto& hook = g_framework->get_d3d12_hook();
+    auto device = hook->get_device();
+    auto command_queue = hook->get_command_queue();
+    const auto desc = backbuffer->GetDesc();
+
+    if (m_vignette_texture == nullptr) {
+        constexpr UINT kSize = 256;
+        constexpr float kInner = 0.35f;
+
+        // Premultiplied black with alpha rising from kInner to the edge.
+        std::vector<uint32_t> pixels(kSize * kSize);
+        for (UINT y = 0; y < kSize; ++y) {
+            for (UINT x = 0; x < kSize; ++x) {
+                const float dx = (x + 0.5f) / kSize * 2.0f - 1.0f;
+                const float dy = (y + 0.5f) / kSize * 2.0f - 1.0f;
+                const float t = std::clamp((std::sqrt(dx * dx + dy * dy) - kInner) / (1.0f - kInner), 0.0f, 1.0f);
+                const auto alpha = static_cast<uint32_t>(t * t * (3.0f - 2.0f * t) * 255.0f);
+                pixels[y * kSize + x] = alpha << 24;
+            }
+        }
+
+        const auto heap_props = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+        const auto tex_desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, kSize, kSize, 1, 1);
+        if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_vignette_texture)))) {
+            spdlog::error("[VR] Failed to create vignette texture");
+            return;
+        }
+
+        DirectX::ResourceUploadBatch upload{ device };
+        upload.Begin();
+        D3D12_SUBRESOURCE_DATA data{ pixels.data(), (LONG_PTR)(kSize * 4), (LONG_PTR)(kSize * kSize * 4) };
+        upload.Upload(m_vignette_texture.Get(), 0, &data, 1);
+        upload.Transition(m_vignette_texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        upload.End(command_queue).wait();
+
+        m_vignette_srv_heap = std::make_unique<DirectX::DescriptorHeap>(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 1);
+        device->CreateShaderResourceView(m_vignette_texture.Get(), nullptr, m_vignette_srv_heap->GetCpuHandle(0));
+        m_vignette_rtv_heap = std::make_unique<DirectX::DescriptorHeap>(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 1);
+        m_vignette_commands.setup(L"Comfort vignette");
+    }
+
+    if (m_vignette_batch == nullptr || m_vignette_format != desc.Format) {
+        DirectX::ResourceUploadBatch upload{ device };
+        upload.Begin();
+        DirectX::RenderTargetState output_state{ desc.Format, DXGI_FORMAT_UNKNOWN };
+        DirectX::SpriteBatchPipelineStateDescription pd{ output_state };
+        m_vignette_batch = std::make_unique<DirectX::DX12::SpriteBatch>(device, upload, pd);
+        upload.End(command_queue).wait();
+        m_vignette_format = desc.Format;
+    }
+
+    D3D12_RENDER_TARGET_VIEW_DESC rtv_desc{};
+    rtv_desc.Format = desc.Format;
+    rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    const auto rtv = m_vignette_rtv_heap->GetCpuHandle(0);
+    device->CreateRenderTargetView(backbuffer, &rtv_desc, rtv);
+
+    m_vignette_commands.wait(INFINITE);
+    auto command_list = m_vignette_commands.cmd_list.Get();
+
+    const auto to_rt = CD3DX12_RESOURCE_BARRIER::Transition(backbuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    command_list->ResourceBarrier(1, &to_rt);
+    command_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+
+    const auto width = (float)desc.Width;
+    const auto height = (float)desc.Height;
+    D3D12_VIEWPORT viewport{ 0.0f, 0.0f, width, height, D3D12_MIN_DEPTH, D3D12_MAX_DEPTH };
+    D3D12_RECT scissor{ 0, 0, (LONG)desc.Width, (LONG)desc.Height };
+    command_list->RSSetViewports(1, &viewport);
+    command_list->RSSetScissorRects(1, &scissor);
+
+    ID3D12DescriptorHeap* heaps[]{ m_vignette_srv_heap->Heap() };
+    command_list->SetDescriptorHeaps(1, heaps);
+
+    // Stronger vignettes shrink the clear area; weak ones also fade in.
+    const float scale = 2.0f - std::clamp(strength, 0.0f, 1.0f);
+    const float alpha = std::clamp(strength / 0.3f, 0.0f, 1.0f);
+    const RECT dest{
+        (LONG)(width * 0.5f * (1.0f - scale)), (LONG)(height * 0.5f * (1.0f - scale)),
+        (LONG)(width * 0.5f * (1.0f + scale)), (LONG)(height * 0.5f * (1.0f + scale)),
+    };
+
+    m_vignette_batch->SetViewport(viewport);
+    m_vignette_batch->Begin(command_list);
+    m_vignette_batch->Draw(m_vignette_srv_heap->GetGpuHandle(0), DirectX::XMUINT2{ 256, 256 }, dest, DirectX::XMVECTORF32{ { { 1.0f, 1.0f, 1.0f, alpha } } });
+    m_vignette_batch->End();
+
+    const auto to_present = CD3DX12_RESOURCE_BARRIER::Transition(backbuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+    command_list->ResourceBarrier(1, &to_present);
+
+    m_vignette_commands.has_commands = true;
+    m_vignette_commands.execute();
 }
 
 void D3D12Component::setup_sprite_batch_pso(DXGI_FORMAT output_format) {
