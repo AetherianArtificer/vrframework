@@ -62,6 +62,7 @@ private:
 
     d3d12::CommandContext                       m_vignette_commands{};
     ComPtr<ID3D12Resource>                      m_vignette_texture{};
+    ComPtr<ID3D12Resource>                      m_fade_texture{};
     std::unique_ptr<DirectX::DescriptorHeap>    m_vignette_srv_heap{};
     std::unique_ptr<DirectX::DescriptorHeap>    m_vignette_rtv_heap{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_vignette_batch{};

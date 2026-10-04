@@ -450,7 +450,8 @@ void D3D12Component::setup() {
 
 void D3D12Component::draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer) {
     const float strength = vr->get_comfort_vignette();
-    if (strength <= 0.01f || backbuffer == nullptr) {
+    const float fade = vr->get_comfort_fade();
+    if ((strength <= 0.01f && fade <= 0.01f) || backbuffer == nullptr) {
         return;
     }
 
@@ -482,15 +483,27 @@ void D3D12Component::draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer) {
             return;
         }
 
+        const auto fade_desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1);
+        if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &fade_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_fade_texture)))) {
+            spdlog::error("[VR] Failed to create fade texture");
+            m_vignette_texture.Reset();
+            return;
+        }
+        const uint32_t opaque_black = 0xFF000000;
+
         DirectX::ResourceUploadBatch upload{ device };
         upload.Begin();
         D3D12_SUBRESOURCE_DATA data{ pixels.data(), (LONG_PTR)(kSize * 4), (LONG_PTR)(kSize * kSize * 4) };
         upload.Upload(m_vignette_texture.Get(), 0, &data, 1);
         upload.Transition(m_vignette_texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        D3D12_SUBRESOURCE_DATA fade_data{ &opaque_black, 4, 4 };
+        upload.Upload(m_fade_texture.Get(), 0, &fade_data, 1);
+        upload.Transition(m_fade_texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         upload.End(command_queue).wait();
 
-        m_vignette_srv_heap = std::make_unique<DirectX::DescriptorHeap>(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 1);
+        m_vignette_srv_heap = std::make_unique<DirectX::DescriptorHeap>(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 2);
         device->CreateShaderResourceView(m_vignette_texture.Get(), nullptr, m_vignette_srv_heap->GetCpuHandle(0));
+        device->CreateShaderResourceView(m_fade_texture.Get(), nullptr, m_vignette_srv_heap->GetCpuHandle(1));
         m_vignette_rtv_heap = std::make_unique<DirectX::DescriptorHeap>(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 1);
         m_vignette_commands.setup(L"Comfort vignette");
     }
@@ -538,7 +551,14 @@ void D3D12Component::draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer) {
 
     m_vignette_batch->SetViewport(viewport);
     m_vignette_batch->Begin(command_list);
-    m_vignette_batch->Draw(m_vignette_srv_heap->GetGpuHandle(0), DirectX::XMUINT2{ 256, 256 }, dest, DirectX::XMVECTORF32{ { { 1.0f, 1.0f, 1.0f, alpha } } });
+    if (strength > 0.01f) {
+        m_vignette_batch->Draw(m_vignette_srv_heap->GetGpuHandle(0), DirectX::XMUINT2{ 256, 256 }, dest, DirectX::XMVECTORF32{ { { 1.0f, 1.0f, 1.0f, alpha } } });
+    }
+    if (fade > 0.01f) {
+        const RECT full{ 0, 0, (LONG)desc.Width, (LONG)desc.Height };
+        const float a = std::clamp(fade, 0.0f, 1.0f);
+        m_vignette_batch->Draw(m_vignette_srv_heap->GetGpuHandle(1), DirectX::XMUINT2{ 1, 1 }, full, DirectX::XMVECTORF32{ { { 1.0f, 1.0f, 1.0f, a } } });
+    }
     m_vignette_batch->End();
 
     const auto to_present = CD3DX12_RESOURCE_BARRIER::Transition(backbuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);

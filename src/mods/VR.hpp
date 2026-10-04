@@ -115,6 +115,9 @@ public:
     // 0 = off, 1 = strongest; drawn over each eye image before submission.
     void set_comfort_vignette(float strength) { m_comfort_vignette = strength; }
     float get_comfort_vignette() const { return m_comfort_vignette; }
+    // 0 = clear, 1 = black; drawn over each eye image before submission.
+    void set_comfort_fade(float alpha) { m_comfort_fade = alpha; }
+    float get_comfort_fade() const { return m_comfort_fade; }
 
     auto get_backbuffer_size() const {
         if( m_is_d3d12) {
@@ -573,6 +576,7 @@ protected:
 public:
     int m_engine_frame_count{0};
     std::atomic<float> m_comfort_vignette{0.0f};
+    std::atomic<float> m_comfort_fade{0.0f};
     int m_render_frame_count{0};
     int m_presenter_frame_count{0};
     bool m_skip_next_present{false};
