@@ -254,6 +254,14 @@ public:
         XrAction action{};
     };
 
+    struct FingerInput {
+        float trigger{ 0.0f };
+        float grip{ 0.0f };
+        bool trigger_touch{ false };
+        bool thumb_touch{ false };
+    };
+    FingerInput get_finger_input(VRRuntime::Hand hand) const;
+
     struct HandData {
         XrSpace space{XR_NULL_HANDLE};
         XrPath path{XR_NULL_PATH};

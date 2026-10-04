@@ -1526,6 +1526,14 @@ Matrix4x4f VR::get_transform(uint32_t index) const {
     return glm::identity<Matrix4x4f>();
 }
 
+VR::FingerState VR::get_finger_state(bool left) const {
+    if (!get_runtime()->is_openxr() || !get_runtime()->loaded) {
+        return {};
+    }
+    const auto in = m_openxr->get_finger_input(left ? VRRuntime::Hand::LEFT : VRRuntime::Hand::RIGHT);
+    return FingerState{ in.trigger, in.grip, in.trigger_touch, in.thumb_touch };
+}
+
 float VR::get_floor_eye_height() const {
     return get_runtime()->is_openxr() ? m_openxr->floor_eye_height.load() : -1.0f;
 }

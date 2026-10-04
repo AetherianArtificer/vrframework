@@ -790,6 +790,43 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
         }
     }
 
+    // Finger input for hand poses: analog trigger and grip, and touch sensing.
+    {
+        auto create_extra = [&](const char* name, XrActionType type, std::initializer_list<const char*> components) {
+            XrActionCreateInfo info{XR_TYPE_ACTION_CREATE_INFO};
+            strcpy(info.actionName, name);
+            strcpy(info.localizedActionName, name);
+            info.actionType = type;
+            info.countSubactionPaths = (uint32_t)hand_paths.size();
+            info.subactionPaths = hand_paths.data();
+            XrAction action{XR_NULL_HANDLE};
+            if (xrCreateAction(this->action_set.handle, &info, &action) != XR_SUCCESS) {
+                spdlog::error("[VR] Failed to create {} action", name);
+                return;
+            }
+            this->action_set.actions.push_back(action);
+            this->action_set.action_map[name] = action;
+            this->action_set.action_names[action] = name;
+            for (auto i = 0; i < 2; ++i) {
+                const std::string hand = i == VRRuntime::Hand::LEFT ? "/user/hand/left/input/" : "/user/hand/right/input/";
+                for (const auto* component : components) {
+                    XrPath p{XR_NULL_PATH};
+                    if (xrStringToPath(this->instance, (hand + component).c_str(), &p) != XR_SUCCESS) {
+                        continue;
+                    }
+                    for (const auto& controller : s_supported_controllers) {
+                        attempt_add_binding(controller, { action, p });
+                    }
+                }
+            }
+        };
+        create_extra("fingertrigger", XR_ACTION_TYPE_FLOAT_INPUT, { "trigger/value" });
+        create_extra("fingergrip", XR_ACTION_TYPE_FLOAT_INPUT, { "squeeze/value" });
+        create_extra("fingertriggertouch", XR_ACTION_TYPE_BOOLEAN_INPUT, { "trigger/touch" });
+        create_extra("fingerthumbtouch", XR_ACTION_TYPE_BOOLEAN_INPUT,
+            { "thumbstick/touch", "thumbrest/touch", "a/touch", "b/touch", "x/touch", "y/touch" });
+    }
+
     // Check for json files that will override the default suggested bindings
     for (const auto& controller : s_supported_controllers) {
         // Create default action vector associations
@@ -1567,4 +1604,37 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
     return result;
 }
+}
+
+runtimes::OpenXR::FingerInput runtimes::OpenXR::get_finger_input(VRRuntime::Hand hand) const {
+    FingerInput out{};
+    const auto& map = this->action_set.action_map;
+    const auto  path = this->hands[hand].path;
+    auto read_float = [&](const char* name, float& value) {
+        if (auto it = map.find(name); it != map.end()) {
+            XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};
+            info.action = it->second;
+            info.subactionPath = path;
+            XrActionStateFloat state{XR_TYPE_ACTION_STATE_FLOAT};
+            if (xrGetActionStateFloat(this->session, &info, &state) == XR_SUCCESS && state.isActive) {
+                value = state.currentState;
+            }
+        }
+    };
+    auto read_bool = [&](const char* name, bool& value) {
+        if (auto it = map.find(name); it != map.end()) {
+            XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};
+            info.action = it->second;
+            info.subactionPath = path;
+            XrActionStateBoolean state{XR_TYPE_ACTION_STATE_BOOLEAN};
+            if (xrGetActionStateBoolean(this->session, &info, &state) == XR_SUCCESS && state.isActive) {
+                value = state.currentState;
+            }
+        }
+    };
+    read_float("fingertrigger", out.trigger);
+    read_float("fingergrip", out.grip);
+    read_bool("fingertriggertouch", out.trigger_touch);
+    read_bool("fingerthumbtouch", out.thumb_touch);
+    return out;
 }

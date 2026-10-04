@@ -231,6 +231,15 @@ public:
     Matrix4x4f get_grip_transform(uint32_t index) const;
     // Eye height above the floor in metres (OpenXR stage space), or a negative value when unavailable.
     float get_floor_eye_height() const;
+
+    // Analog trigger/grip (0..1) and finger touch sensing for hand poses.
+    struct FingerState {
+        float trigger{ 0.0f };
+        float grip{ 0.0f };
+        bool trigger_touch{ false };
+        bool thumb_touch{ false };
+    };
+    FingerState get_finger_state(bool left) const;
     vr::HmdMatrix34_t get_raw_transform(uint32_t index) const;
 
     const auto& get_eyes() const {
