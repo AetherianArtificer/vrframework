@@ -1053,6 +1053,10 @@ void Framework::save_config() {
 void Framework::set_draw_ui(bool state, bool should_save) {
     std::scoped_lock _{m_config_mtx};
 
+#ifndef VR_DEV_OVERLAY
+    state = false;
+#endif
+
     bool prev_state = m_draw_ui;
     m_draw_ui = state;
 

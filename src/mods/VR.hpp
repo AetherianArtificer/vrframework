@@ -96,6 +96,22 @@ public:
     void on_end_rendering(void* entry);
 //    void on_pre_wait_rendering(void* entry);
     void on_wait_rendering(int frame);
+    void set_resolution_scale(float scale) {
+        m_resolution_scale->value() = scale;
+        if (m_openxr) {
+            m_openxr->resolution_scale = scale;
+        }
+    }
+    void set_world_scale(float scale) { m_world_scale_option->value() = scale; }
+
+    // Headset refresh period in seconds, or 0 when unknown.
+    double get_display_period() {
+        if (!get_runtime()->is_openxr() || !m_openxr->ready()) {
+            return 0.0;
+        }
+        return m_openxr->get_pipeline_state().frame_state.predictedDisplayPeriod / 1e9;
+    }
+
     // 0 = off, 1 = strongest; drawn over each eye image before submission.
     void set_comfort_vignette(float strength) { m_comfort_vignette = strength; }
     float get_comfort_vignette() const { return m_comfort_vignette; }
