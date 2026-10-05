@@ -520,6 +520,8 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         DirectX::RenderTargetState output_state{ eye_format, DXGI_FORMAT_UNKNOWN };
         DirectX::SpriteBatchPipelineStateDescription pd{ output_state, &DirectX::DX12::CommonStates::Opaque };
         m_native_copy_batch = std::make_unique<DirectX::DX12::SpriteBatch>(device, upload, pd);
+        DirectX::SpriteBatchPipelineStateDescription ui_pd{ output_state, &DirectX::DX12::CommonStates::AlphaBlend };
+        m_native_ui_batch = std::make_unique<DirectX::DX12::SpriteBatch>(device, upload, ui_pd);
         upload.End(g_framework->get_d3d12_hook()->get_command_queue()).wait();
         m_native_copy_format = eye_format;
     }
@@ -563,6 +565,26 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         }
     }
 
+    bool ui_ready = false;
+    if (full_frame && !mono && (captured[0] || captured[1])) {
+        if (auto ui = vr->get_native_ui_source(); ui != nullptr) {
+            if (m_native_ui_resource != ui.Get() || m_native_ui.texture == nullptr) {
+                m_native_ui.reset();
+                m_native_ui_resource = nullptr;
+                const auto format = ui->GetDesc().Format;
+                const auto typed = format == DXGI_FORMAT_R8G8B8A8_TYPELESS ? DXGI_FORMAT_R8G8B8A8_UNORM
+                                 : format == DXGI_FORMAT_B8G8R8A8_TYPELESS ? DXGI_FORMAT_B8G8R8A8_UNORM : format;
+                if (m_native_ui.setup(g_framework->get_d3d12_hook()->get_device(), ui.Get(), typed, typed, L"Native stereo UI layer")) {
+                    m_native_ui_resource = ui.Get();
+                    spdlog::info("[VR] Native stereo UI layer {}x{} format {} drawn over both eyes", ui->GetDesc().Width, ui->GetDesc().Height, (uint32_t)format);
+                } else {
+                    m_native_ui.reset();
+                }
+            }
+            ui_ready = m_native_ui_resource != nullptr;
+        }
+    }
+
     auto command_list = commands.cmd_list.Get();
     for (uint32_t eye = 0; eye < 2; ++eye) {
         auto& dst = m_native_eye[eye];
@@ -591,12 +613,34 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         m_native_copy_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
         const RECT dest{ 0, 0, (LONG)dst_desc.Width, (LONG)dst_desc.Height };
         if (captured[eye]) {
+            // Within a few pixels of the eye's size the image is copied pixel for pixel; resampling it blurs the whole eye.
             const auto capture_desc = m_native_capture[eye].texture->GetDesc();
-            m_native_copy_batch->Draw(view.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)capture_desc.Width, (uint32_t)capture_desc.Height }, dest, DirectX::Colors::White);
+            const LONG capture_width = (LONG)capture_desc.Width;
+            const LONG capture_height = (LONG)capture_desc.Height;
+            const bool same_size = std::abs(capture_width - dest.right) <= 16 && std::abs(capture_height - dest.bottom) <= 16;
+            const RECT exact{ 0, 0, std::min(capture_width, dest.right), std::min(capture_height, dest.bottom) };
+            if (same_size) {
+                m_native_copy_batch->Draw(view.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)capture_width, (uint32_t)capture_height }, exact, &exact, DirectX::Colors::White);
+            } else {
+                m_native_copy_batch->Draw(view.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)capture_width, (uint32_t)capture_height }, dest, DirectX::Colors::White);
+            }
         } else {
             m_native_copy_batch->Draw(view.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)desc.Width, (uint32_t)desc.Height }, dest, &source, DirectX::Colors::White);
         }
         m_native_copy_batch->End();
+
+        // The UI layer, shifted toward the nose in each eye so the HUD sits a couple of metres away instead of at infinity.
+        if (ui_ready && captured[eye]) {
+            const auto ui_desc = m_native_ui.texture->GetDesc();
+            const LONG shift = (LONG)(dest.right * 0.006f) * (eye == 0 ? 1 : -1);
+            const RECT ui_dest{ dest.left + shift, dest.top, dest.right + shift, dest.bottom };
+            ID3D12DescriptorHeap* ui_heaps[]{ m_native_ui.srv_heap->Heap() };
+            command_list->SetDescriptorHeaps(1, ui_heaps);
+            m_native_ui_batch->SetViewport(viewport);
+            m_native_ui_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
+            m_native_ui_batch->Draw(m_native_ui.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)ui_desc.Width, (uint32_t)ui_desc.Height }, ui_dest, DirectX::Colors::White);
+            m_native_ui_batch->End();
+        }
 
         barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;

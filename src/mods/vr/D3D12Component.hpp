@@ -67,6 +67,9 @@ private:
     std::array<d3d12::TextureContext, 2> m_native_capture{};
     std::array<ID3D12Resource*, 2> m_native_capture_source{};
     std::wstring m_eye_dump_path{};
+    std::unique_ptr<DirectX::DX12::SpriteBatch> m_native_ui_batch{};
+    d3d12::TextureContext m_native_ui{};
+    ID3D12Resource* m_native_ui_resource{};
     std::array<d3d12::TextureContext, 2> m_native_eye{};
     std::array<d3d12::ResourceCopier, 3> m_generic_copiers{};
 
