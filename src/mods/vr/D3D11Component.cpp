@@ -402,7 +402,7 @@ std::optional<std::string> D3D11Component::OpenXR::create_swapchains() {
 
     this->contexts.clear();
     //TODO clean up this mess
-    this->contexts.resize(5);
+    this->contexts.resize((size_t)runtimes::OpenXR::SwapchainIndex::END);
     auto create_swapchain = [&](uint32_t swapchainIndex, int format, int width, int height) -> std::optional<std::string> {
         spdlog::info("[VR] Creating swapchain for eye {}", swapchainIndex);
         spdlog::info("[VR] Width: {}", width);

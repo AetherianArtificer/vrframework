@@ -575,7 +575,7 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
     auto& openxr = vr->m_openxr;
 
     this->contexts.clear();
-    this->contexts.resize(5);
+    this->contexts.resize((size_t)runtimes::OpenXR::SwapchainIndex::END);
 
     backbuffer_desc.Width = vr->get_hmd_width();
     backbuffer_desc.Height = vr->get_hmd_height();
