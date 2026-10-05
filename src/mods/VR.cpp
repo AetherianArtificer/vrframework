@@ -317,6 +317,25 @@ std::optional<std::string> VR::initialize_openxr() {
 
             return std::nullopt;
         }
+
+        // Runtime capabilities, for diagnosing which tracking features this connection offers.
+        XrInstanceProperties instance_properties{XR_TYPE_INSTANCE_PROPERTIES};
+        if (xrGetInstanceProperties(m_openxr->instance, &instance_properties) == XR_SUCCESS) {
+            spdlog::info("[VR] OpenXR runtime: {} {}.{}.{}", instance_properties.runtimeName, XR_VERSION_MAJOR(instance_properties.runtimeVersion),
+                XR_VERSION_MINOR(instance_properties.runtimeVersion), XR_VERSION_PATCH(instance_properties.runtimeVersion));
+        }
+        uint32_t extension_count = 0;
+        if (xrEnumerateInstanceExtensionProperties(nullptr, 0, &extension_count, nullptr) == XR_SUCCESS && extension_count > 0) {
+            std::vector<XrExtensionProperties> available(extension_count, XrExtensionProperties{XR_TYPE_EXTENSION_PROPERTIES});
+            if (xrEnumerateInstanceExtensionProperties(nullptr, extension_count, &extension_count, available.data()) == XR_SUCCESS) {
+                std::string names;
+                for (const auto& extension : available) {
+                    names += " ";
+                    names += extension.extensionName;
+                }
+                spdlog::info("[VR] OpenXR extensions ({}):{}", extension_count, names);
+            }
+        }
     } else {
         spdlog::info("[VR] Found existing openxr instance");
     }
