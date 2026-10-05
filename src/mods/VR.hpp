@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include <chrono>
 #include <bitset>
 #include <memory>
@@ -286,6 +288,37 @@ public:
         bool thumb_touch{ false };
     };
     FingerState get_finger_state(bool left) const;
+
+    // A tracked joint in the same stage space as get_transform.
+    struct TrackedJoint {
+        Vector3f position{};
+        glm::quat orientation{ 1.0f, 0.0f, 0.0f, 0.0f };
+        bool position_valid{ false };
+        bool orientation_valid{ false };
+    };
+
+    // Quest body tracking (XR_FB_body_tracking, with XR_META_body_tracking_full_body when available).
+    // Joints use XrFullBodyJointMETA indices (0-69 match XrBodyJointFB; 70-83 are the legs).
+    struct BodyTrackingState {
+        bool supported{ false };      // runtime reports supportsBodyTracking
+        bool full_body{ false };      // legs available (supportsFullBodyTracking)
+        bool active{ false };         // this frame's locations are active
+        bool high_fidelity{ false };  // XR_META_body_tracking_fidelity reports high fidelity
+        float confidence{ 0.0f };
+        uint32_t joint_count{ 0 };
+        std::array<TrackedJoint, 84> joints{};
+    };
+    // Returns false when no tracker exists; check `active` for this frame's data.
+    bool get_body_tracking(BodyTrackingState& out) const;
+
+    // Hand tracking (XR_EXT_hand_tracking), XrHandJointEXT indices.
+    struct HandTrackingState {
+        bool supported{ false };
+        bool active{ false };
+        int data_source{ 0 };  // 0 unknown, 1 tracked hand (unobstructed), 2 derived from the controller
+        std::array<TrackedJoint, 26> joints{};
+    };
+    bool get_hand_tracking(bool left, HandTrackingState& out) const;
     vr::HmdMatrix34_t get_raw_transform(uint32_t index) const;
 
     const auto& get_eyes() const {

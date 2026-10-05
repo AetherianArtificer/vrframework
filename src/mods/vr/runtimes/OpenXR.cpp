@@ -133,6 +133,8 @@ VRRuntime::Error OpenXR::update_poses(int frame) {
         }
     }
 
+    this->update_body_hand_tracking(display_time);
+
     for (auto& hand : this->hands) {
         hand.location.next = &hand.velocity;
         result = xrLocateSpace(hand.space, this->stage_space, display_time, &hand.location);
@@ -456,6 +458,8 @@ void OpenXR::destroy() {
     std::scoped_lock _{sync_mtx};
 
     if (this->session != nullptr) {
+        this->destroy_body_hand_tracking();
+
         if (this->session_ready) {
             xrEndSession(this->session);
         }
@@ -474,6 +478,183 @@ void OpenXR::destroy() {
     this->frame_synced = false;
     this->frame_began = false;
 //    this->internal_frame_counter = 0;
+}
+
+void OpenXR::initialize_body_hand_tracking() {
+    const auto get_proc = [&](const char* name, auto& pfn) {
+        if (xrGetInstanceProcAddr(this->instance, name, (PFN_xrVoidFunction*)&pfn) != XR_SUCCESS) {
+            pfn = nullptr;
+        }
+    };
+
+    if (this->body_tracking_supported && this->body_tracker == XR_NULL_HANDLE) {
+        get_proc("xrCreateBodyTrackerFB", this->pfn_xrCreateBodyTrackerFB);
+        get_proc("xrLocateBodyJointsFB", this->pfn_xrLocateBodyJointsFB);
+        get_proc("xrDestroyBodyTrackerFB", this->pfn_xrDestroyBodyTrackerFB);
+        if (this->body_fidelity_supported) {
+            get_proc("xrRequestBodyTrackingFidelityMETA", this->pfn_xrRequestBodyTrackingFidelityMETA);
+        }
+
+        if (this->pfn_xrCreateBodyTrackerFB != nullptr && this->pfn_xrLocateBodyJointsFB != nullptr) {
+            XrBodyTrackerCreateInfoFB create_info{XR_TYPE_BODY_TRACKER_CREATE_INFO_FB};
+            create_info.bodyJointSet = this->body_full_body_supported ? XR_BODY_JOINT_SET_FULL_BODY_META : XR_BODY_JOINT_SET_DEFAULT_FB;
+
+            const auto result = this->pfn_xrCreateBodyTrackerFB(this->session, &create_info, &this->body_tracker);
+            if (result == XR_SUCCESS) {
+                this->body_joints = {};
+                this->body_joints.joint_count = this->body_full_body_supported ? XR_FULL_BODY_JOINT_COUNT_META : XR_BODY_JOINT_COUNT_FB;
+                spdlog::info("[VR] Body tracker created ({} joints)", this->body_joints.joint_count);
+
+                if (this->pfn_xrRequestBodyTrackingFidelityMETA != nullptr) {
+                    const auto fidelity_result = this->pfn_xrRequestBodyTrackingFidelityMETA(this->body_tracker, XR_BODY_TRACKING_FIDELITY_HIGH_META);
+                    spdlog::info("[VR] Body tracking high fidelity request: {}", this->get_result_string(fidelity_result).c_str());
+                }
+            } else {
+                this->body_tracker = XR_NULL_HANDLE;
+                spdlog::error("[VR] xrCreateBodyTrackerFB failed: {}", this->get_result_string(result).c_str());
+            }
+        } else {
+            spdlog::error("[VR] Body tracking functions unavailable");
+        }
+    }
+
+    if (this->hand_tracking_supported) {
+        get_proc("xrCreateHandTrackerEXT", this->pfn_xrCreateHandTrackerEXT);
+        get_proc("xrLocateHandJointsEXT", this->pfn_xrLocateHandJointsEXT);
+        get_proc("xrDestroyHandTrackerEXT", this->pfn_xrDestroyHandTrackerEXT);
+
+        if (this->pfn_xrCreateHandTrackerEXT == nullptr || this->pfn_xrLocateHandJointsEXT == nullptr) {
+            spdlog::error("[VR] Hand tracking functions unavailable");
+            return;
+        }
+
+        XrHandTrackingDataSourceEXT sources[] = { XR_HAND_TRACKING_DATA_SOURCE_UNOBSTRUCTED_EXT, XR_HAND_TRACKING_DATA_SOURCE_CONTROLLER_EXT };
+        XrHandTrackingDataSourceInfoEXT source_info{XR_TYPE_HAND_TRACKING_DATA_SOURCE_INFO_EXT};
+        source_info.requestedDataSourceCount = (uint32_t)std::size(sources);
+        source_info.requestedDataSources = sources;
+
+        for (auto i = 0; i < 2; ++i) {
+            if (this->hand_trackers[i] != XR_NULL_HANDLE) {
+                continue;
+            }
+
+            XrHandTrackerCreateInfoEXT create_info{XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT};
+            create_info.hand = i == VRRuntime::Hand::LEFT ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT;
+            create_info.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+            create_info.next = ext_hand_data_source ? &source_info : nullptr;
+
+            auto result = this->pfn_xrCreateHandTrackerEXT(this->session, &create_info, &this->hand_trackers[i]);
+            if (result != XR_SUCCESS && create_info.next != nullptr) {
+                spdlog::warn("[VR] xrCreateHandTrackerEXT with data sources failed: {}, retrying without", this->get_result_string(result).c_str());
+                create_info.next = nullptr;
+                result = this->pfn_xrCreateHandTrackerEXT(this->session, &create_info, &this->hand_trackers[i]);
+            }
+
+            if (result == XR_SUCCESS) {
+                this->hand_joints[i] = {};
+                spdlog::info("[VR] Hand tracker created ({})", i == VRRuntime::Hand::LEFT ? "left" : "right");
+            } else {
+                this->hand_trackers[i] = XR_NULL_HANDLE;
+                spdlog::error("[VR] xrCreateHandTrackerEXT ({}) failed: {}", i == VRRuntime::Hand::LEFT ? "left" : "right", this->get_result_string(result).c_str());
+            }
+        }
+    }
+}
+
+void OpenXR::destroy_body_hand_tracking() {
+    std::unique_lock _{ this->pose_mtx };
+
+    if (this->body_tracker != XR_NULL_HANDLE && this->pfn_xrDestroyBodyTrackerFB != nullptr) {
+        this->pfn_xrDestroyBodyTrackerFB(this->body_tracker);
+    }
+    this->body_tracker = XR_NULL_HANDLE;
+    this->body_joints = {};
+
+    for (auto i = 0; i < 2; ++i) {
+        if (this->hand_trackers[i] != XR_NULL_HANDLE && this->pfn_xrDestroyHandTrackerEXT != nullptr) {
+            this->pfn_xrDestroyHandTrackerEXT(this->hand_trackers[i]);
+        }
+        this->hand_trackers[i] = XR_NULL_HANDLE;
+        this->hand_joints[i] = {};
+    }
+}
+
+// Called from update_poses with pose_mtx held; failures only mark the data inactive.
+void OpenXR::update_body_hand_tracking(XrTime display_time) {
+    if (this->body_tracker != XR_NULL_HANDLE) {
+        auto& body = this->body_joints;
+
+        XrBodyJointsLocateInfoFB locate_info{XR_TYPE_BODY_JOINTS_LOCATE_INFO_FB};
+        locate_info.baseSpace = this->stage_space;
+        locate_info.time = display_time;
+
+        XrBodyTrackingFidelityStatusMETA fidelity_status{XR_TYPE_BODY_TRACKING_FIDELITY_STATUS_META};
+        XrBodyJointLocationsFB locations{XR_TYPE_BODY_JOINT_LOCATIONS_FB};
+        locations.next = this->body_fidelity_supported ? &fidelity_status : nullptr;
+        locations.jointCount = body.joint_count;
+        locations.jointLocations = body.joints.data();
+
+        if (this->pfn_xrLocateBodyJointsFB(this->body_tracker, &locate_info, &locations) == XR_SUCCESS) {
+            body.active = locations.isActive == XR_TRUE;
+            body.confidence = locations.confidence;
+            body.high_fidelity = this->body_fidelity_supported && fidelity_status.fidelity == XR_BODY_TRACKING_FIDELITY_HIGH_META;
+        } else {
+            body.active = false;
+            body.confidence = 0.0f;
+        }
+    }
+
+    for (auto i = 0; i < 2; ++i) {
+        if (this->hand_trackers[i] == XR_NULL_HANDLE) {
+            continue;
+        }
+
+        auto& hand = this->hand_joints[i];
+
+        XrHandJointsLocateInfoEXT locate_info{XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
+        locate_info.baseSpace = this->stage_space;
+        locate_info.time = display_time;
+
+        XrHandTrackingDataSourceStateEXT source_state{XR_TYPE_HAND_TRACKING_DATA_SOURCE_STATE_EXT};
+        XrHandJointLocationsEXT locations{XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
+        locations.next = ext_hand_data_source ? &source_state : nullptr;
+        locations.jointCount = (uint32_t)hand.joints.size();
+        locations.jointLocations = hand.joints.data();
+
+        if (this->pfn_xrLocateHandJointsEXT(this->hand_trackers[i], &locate_info, &locations) == XR_SUCCESS) {
+            hand.active = locations.isActive == XR_TRUE;
+            hand.data_source = ext_hand_data_source && source_state.isActive == XR_TRUE ? (int)source_state.dataSource : 0;
+        } else {
+            hand.active = false;
+            hand.data_source = 0;
+        }
+    }
+
+    if (this->body_tracker == XR_NULL_HANDLE && this->hand_trackers[0] == XR_NULL_HANDLE && this->hand_trackers[1] == XR_NULL_HANDLE) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now - this->last_tracking_log < std::chrono::seconds(5)) {
+        return;
+    }
+    this->last_tracking_log = now;
+
+    uint32_t valid_joints = 0;
+    constexpr auto valid = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+    for (uint32_t j = 0; j < this->body_joints.joint_count; ++j) {
+        if ((this->body_joints.joints[j].locationFlags & valid) == valid) {
+            ++valid_joints;
+        }
+    }
+
+    const auto& l = this->hand_joints[VRRuntime::Hand::LEFT];
+    const auto& r = this->hand_joints[VRRuntime::Hand::RIGHT];
+    spdlog::info("[VR] Body: active {} conf {:.2f} fidelity {} valid joints {}/{} | hands L {} (source {}) R {} (source {})",
+        this->body_joints.active, this->body_joints.confidence, !this->body_fidelity_supported ? "n/a" : (this->body_joints.high_fidelity ? "high" : "low"),
+        this->body_joints.active ? valid_joints : 0, this->body_joints.joint_count,
+        this->hand_trackers[0] == XR_NULL_HANDLE ? "none" : (l.active ? "active" : "inactive"), l.data_source,
+        this->hand_trackers[1] == XR_NULL_HANDLE ? "none" : (r.active ? "active" : "inactive"), r.data_source);
 }
 
 std::string OpenXR::get_result_string(XrResult result) const {

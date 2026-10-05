@@ -300,6 +300,50 @@ public:
 
     std::array<HandData, 2> hands{};
 
+    // Body/hand tracking. Extension flags are static like the instance they were enabled on.
+    static inline bool ext_body_tracking{false};
+    static inline bool ext_body_full_body{false};
+    static inline bool ext_body_fidelity{false};
+    static inline bool ext_hand_tracking{false};
+    static inline bool ext_hand_data_source{false};
+
+    bool body_tracking_supported{false};
+    bool body_full_body_supported{false};
+    bool body_fidelity_supported{false};
+    bool hand_tracking_supported{false};
+
+    PFN_xrCreateBodyTrackerFB pfn_xrCreateBodyTrackerFB{nullptr};
+    PFN_xrLocateBodyJointsFB pfn_xrLocateBodyJointsFB{nullptr};
+    PFN_xrDestroyBodyTrackerFB pfn_xrDestroyBodyTrackerFB{nullptr};
+    PFN_xrRequestBodyTrackingFidelityMETA pfn_xrRequestBodyTrackingFidelityMETA{nullptr};
+    PFN_xrCreateHandTrackerEXT pfn_xrCreateHandTrackerEXT{nullptr};
+    PFN_xrLocateHandJointsEXT pfn_xrLocateHandJointsEXT{nullptr};
+    PFN_xrDestroyHandTrackerEXT pfn_xrDestroyHandTrackerEXT{nullptr};
+
+    XrBodyTrackerFB body_tracker{XR_NULL_HANDLE};
+    std::array<XrHandTrackerEXT, 2> hand_trackers{XR_NULL_HANDLE, XR_NULL_HANDLE};
+
+    struct BodyJoints {
+        bool active{false};
+        bool high_fidelity{false};
+        float confidence{0.0f};
+        uint32_t joint_count{0};
+        std::array<XrBodyJointLocationFB, XR_FULL_BODY_JOINT_COUNT_META> joints{};
+    } body_joints{};
+
+    struct HandJoints {
+        bool active{false};
+        int data_source{0};
+        std::array<XrHandJointLocationEXT, XR_HAND_JOINT_COUNT_EXT> joints{};
+    };
+    std::array<HandJoints, 2> hand_joints{};
+
+    std::chrono::steady_clock::time_point last_tracking_log{};
+
+    void initialize_body_hand_tracking();
+    void destroy_body_hand_tracking();
+    void update_body_hand_tracking(XrTime display_time);
+
 public:
     struct InteractionBinding {
         std::string interaction_path_name{};

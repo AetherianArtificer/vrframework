@@ -286,13 +286,38 @@ std::optional<std::string> VR::initialize_openxr() {
             extensions.push_back(XR_KHR_D3D11_ENABLE_EXTENSION_NAME);
         }
 
+        std::vector<XrExtensionProperties> available{};
+        uint32_t extension_count = 0;
+        if (xrEnumerateInstanceExtensionProperties(nullptr, 0, &extension_count, nullptr) == XR_SUCCESS && extension_count > 0) {
+            available.resize(extension_count, XrExtensionProperties{XR_TYPE_EXTENSION_PROPERTIES});
+            if (xrEnumerateInstanceExtensionProperties(nullptr, extension_count, &extension_count, available.data()) != XR_SUCCESS) {
+                available.clear();
+            }
+        }
+
+        const auto enable_if_available = [&](const char* name) {
+            for (const auto& extension : available) {
+                if (std::string_view{extension.extensionName} == name) {
+                    extensions.push_back(name);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        runtimes::OpenXR::ext_body_tracking = enable_if_available(XR_FB_BODY_TRACKING_EXTENSION_NAME);
+        runtimes::OpenXR::ext_body_full_body = runtimes::OpenXR::ext_body_tracking && enable_if_available(XR_META_BODY_TRACKING_FULL_BODY_EXTENSION_NAME);
+        runtimes::OpenXR::ext_body_fidelity = runtimes::OpenXR::ext_body_tracking && enable_if_available(XR_META_BODY_TRACKING_FIDELITY_EXTENSION_NAME);
+        runtimes::OpenXR::ext_hand_tracking = enable_if_available(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+        runtimes::OpenXR::ext_hand_data_source = runtimes::OpenXR::ext_hand_tracking && enable_if_available(XR_EXT_HAND_TRACKING_DATA_SOURCE_EXTENSION_NAME);
+
         XrInstanceCreateInfo instance_create_info{XR_TYPE_INSTANCE_CREATE_INFO};
         instance_create_info.next = nullptr;
         instance_create_info.enabledExtensionCount = (uint32_t)extensions.size();
         instance_create_info.enabledExtensionNames = extensions.data();
 
         strcpy(instance_create_info.applicationInfo.applicationName, g_framework->get_game_name());
-        instance_create_info.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+        instance_create_info.applicationInfo.apiVersion = XR_API_VERSION_1_0;
         
         result = xrCreateInstance(&instance_create_info, &m_openxr->instance);
 
@@ -311,18 +336,20 @@ std::optional<std::string> VR::initialize_openxr() {
             spdlog::info("[VR] OpenXR runtime: {} {}.{}.{}", instance_properties.runtimeName, XR_VERSION_MAJOR(instance_properties.runtimeVersion),
                 XR_VERSION_MINOR(instance_properties.runtimeVersion), XR_VERSION_PATCH(instance_properties.runtimeVersion));
         }
-        uint32_t extension_count = 0;
-        if (xrEnumerateInstanceExtensionProperties(nullptr, 0, &extension_count, nullptr) == XR_SUCCESS && extension_count > 0) {
-            std::vector<XrExtensionProperties> available(extension_count, XrExtensionProperties{XR_TYPE_EXTENSION_PROPERTIES});
-            if (xrEnumerateInstanceExtensionProperties(nullptr, extension_count, &extension_count, available.data()) == XR_SUCCESS) {
-                std::string names;
-                for (const auto& extension : available) {
-                    names += " ";
-                    names += extension.extensionName;
-                }
-                spdlog::info("[VR] OpenXR extensions ({}):{}", extension_count, names);
-            }
+        std::string names;
+        for (const auto& extension : available) {
+            names += " ";
+            names += extension.extensionName;
         }
+        spdlog::info("[VR] OpenXR extensions ({}):{}", available.size(), names);
+
+        std::string enabled_names;
+        for (const auto name : extensions) {
+            enabled_names += " ";
+            enabled_names += name;
+            m_openxr->enabled_extensions.insert(name);
+        }
+        spdlog::info("[VR] OpenXR enabled extensions:{}", enabled_names);
     } else {
         spdlog::info("[VR] Found existing openxr instance");
     }
@@ -420,6 +447,20 @@ std::optional<std::string> VR::initialize_openxr() {
     spdlog::info("[VR] Getting OpenXR system properties");
 
     XrSystemProperties system_properties{XR_TYPE_SYSTEM_PROPERTIES};
+    XrSystemBodyTrackingPropertiesFB body_properties{XR_TYPE_SYSTEM_BODY_TRACKING_PROPERTIES_FB};
+    XrSystemPropertiesBodyTrackingFullBodyMETA full_body_properties{XR_TYPE_SYSTEM_PROPERTIES_BODY_TRACKING_FULL_BODY_META};
+    XrSystemPropertiesBodyTrackingFidelityMETA fidelity_properties{XR_TYPE_SYSTEM_PROPERTIES_BODY_TRACKING_FIDELITY_META};
+    XrSystemHandTrackingPropertiesEXT hand_properties{XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT};
+
+    const auto chain = [&](auto& props) {
+        props.next = system_properties.next;
+        system_properties.next = &props;
+    };
+    if (runtimes::OpenXR::ext_body_tracking) chain(body_properties);
+    if (runtimes::OpenXR::ext_body_full_body) chain(full_body_properties);
+    if (runtimes::OpenXR::ext_body_fidelity) chain(fidelity_properties);
+    if (runtimes::OpenXR::ext_hand_tracking) chain(hand_properties);
+
     result = xrGetSystemProperties(m_openxr->instance, m_openxr->system, &system_properties);
 
     if (result != XR_SUCCESS) {
@@ -436,6 +477,16 @@ std::optional<std::string> VR::initialize_openxr() {
     spdlog::info("[VR] OpenXR system supports {} layers", system_properties.graphicsProperties.maxLayerCount);
     spdlog::info("[VR] OpenXR system orientation: {}", system_properties.trackingProperties.orientationTracking);
     spdlog::info("[VR] OpenXR system position: {}", system_properties.trackingProperties.positionTracking);
+
+    m_openxr->body_tracking_supported = runtimes::OpenXR::ext_body_tracking && body_properties.supportsBodyTracking == XR_TRUE;
+    m_openxr->body_full_body_supported = m_openxr->body_tracking_supported && runtimes::OpenXR::ext_body_full_body && full_body_properties.supportsFullBodyTracking == XR_TRUE;
+    m_openxr->body_fidelity_supported = m_openxr->body_tracking_supported && runtimes::OpenXR::ext_body_fidelity && fidelity_properties.supportsBodyTrackingFidelity == XR_TRUE;
+    m_openxr->hand_tracking_supported = runtimes::OpenXR::ext_hand_tracking && hand_properties.supportsHandTracking == XR_TRUE;
+
+    spdlog::info("[VR] Body tracking: supported {} full body {} fidelity {} | hand tracking: supported {}",
+        m_openxr->body_tracking_supported, m_openxr->body_full_body_supported, m_openxr->body_fidelity_supported, m_openxr->hand_tracking_supported);
+
+    m_openxr->initialize_body_hand_tracking();
 
     // Step 6: Get the view configuration properties
     m_openxr->update_render_target_size();
@@ -1484,6 +1535,57 @@ Matrix4x4f VR::get_grip_transform(uint32_t index) const {
         }
     }
     return get_transform(index);
+}
+
+static VR::TrackedJoint to_tracked_joint(XrSpaceLocationFlags flags, const XrPosef& pose) {
+    VR::TrackedJoint joint{};
+    joint.position_valid = (flags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+    joint.orientation_valid = (flags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+    if (joint.position_valid) {
+        joint.position = Vector3f{ pose.position.x, pose.position.y, pose.position.z };
+    }
+    if (joint.orientation_valid) {
+        joint.orientation = runtimes::OpenXR::to_glm(pose.orientation);
+    }
+    return joint;
+}
+
+bool VR::get_body_tracking(BodyTrackingState& out) const {
+    out = {};
+    if (!get_runtime()->is_openxr() || !get_runtime()->loaded || m_openxr == nullptr || m_openxr->body_tracker == XR_NULL_HANDLE) {
+        return false;
+    }
+
+    std::shared_lock _{ get_runtime()->pose_mtx };
+    const auto& body = m_openxr->body_joints;
+    out.supported = true;
+    out.full_body = m_openxr->body_full_body_supported;
+    out.active = body.active;
+    out.high_fidelity = body.high_fidelity;
+    out.confidence = body.confidence;
+    out.joint_count = body.joint_count;
+    for (uint32_t i = 0; i < body.joint_count && i < out.joints.size(); ++i) {
+        out.joints[i] = to_tracked_joint(body.active ? body.joints[i].locationFlags : 0, body.joints[i].pose);
+    }
+    return true;
+}
+
+bool VR::get_hand_tracking(bool left, HandTrackingState& out) const {
+    out = {};
+    const auto index = left ? VRRuntime::Hand::LEFT : VRRuntime::Hand::RIGHT;
+    if (!get_runtime()->is_openxr() || !get_runtime()->loaded || m_openxr == nullptr || m_openxr->hand_trackers[index] == XR_NULL_HANDLE) {
+        return false;
+    }
+
+    std::shared_lock _{ get_runtime()->pose_mtx };
+    const auto& hand = m_openxr->hand_joints[index];
+    out.supported = true;
+    out.active = hand.active;
+    out.data_source = hand.data_source;
+    for (size_t i = 0; i < out.joints.size(); ++i) {
+        out.joints[i] = to_tracked_joint(hand.active ? hand.joints[i].locationFlags : 0, hand.joints[i].pose);
+    }
+    return true;
 }
 
 vr::HmdMatrix34_t VR::get_raw_transform(uint32_t index) const {
