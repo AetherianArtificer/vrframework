@@ -629,6 +629,11 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         }
         m_native_copy_batch->End();
 
+        // Comfort vignette and fade, drawn here because the eyes no longer show the back buffer.
+        const float vignette = vr->get_comfort_vignette();
+        const float fade = vr->get_comfort_fade();
+        const bool comfort = full_frame && m_vignette_srv_heap != nullptr && (vignette > 0.01f || fade > 0.01f);
+
         // The UI layer, shifted toward the nose in each eye so the HUD sits a couple of metres away instead of at infinity.
         if (ui_ready && captured[eye]) {
             const auto ui_desc = m_native_ui.texture->GetDesc();
@@ -639,6 +644,25 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
             m_native_ui_batch->SetViewport(viewport);
             m_native_ui_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
             m_native_ui_batch->Draw(m_native_ui.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)ui_desc.Width, (uint32_t)ui_desc.Height }, ui_dest, DirectX::Colors::White);
+            m_native_ui_batch->End();
+        }
+        if (comfort) {
+            ID3D12DescriptorHeap* comfort_heaps[]{ m_vignette_srv_heap->Heap() };
+            command_list->SetDescriptorHeaps(1, comfort_heaps);
+            m_native_ui_batch->SetViewport(viewport);
+            m_native_ui_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
+            if (vignette > 0.01f) {
+                const float scale = 2.0f - std::clamp(vignette, 0.0f, 1.0f);
+                const float alpha = std::clamp(vignette / 0.3f, 0.0f, 1.0f);
+                const float w = (float)dest.right;
+                const float h = (float)dest.bottom;
+                const RECT ring{ (LONG)(w * 0.5f * (1.0f - scale)), (LONG)(h * 0.5f * (1.0f - scale)), (LONG)(w * 0.5f * (1.0f + scale)), (LONG)(h * 0.5f * (1.0f + scale)) };
+                m_native_ui_batch->Draw(m_vignette_srv_heap->GetGpuHandle(0), DirectX::XMUINT2{ 256, 256 }, ring, DirectX::XMVECTORF32{ { { 1.0f, 1.0f, 1.0f, alpha } } });
+            }
+            if (fade > 0.01f) {
+                const float a = std::clamp(fade, 0.0f, 1.0f);
+                m_native_ui_batch->Draw(m_vignette_srv_heap->GetGpuHandle(1), DirectX::XMUINT2{ 1, 1 }, dest, DirectX::XMVECTORF32{ { { 1.0f, 1.0f, 1.0f, a } } });
+            }
             m_native_ui_batch->End();
         }
 
@@ -741,6 +765,11 @@ void D3D12Component::draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer) {
         device->CreateShaderResourceView(m_fade_texture.Get(), nullptr, m_vignette_srv_heap->GetCpuHandle(1));
         m_vignette_rtv_heap = std::make_unique<DirectX::DescriptorHeap>(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 1);
         m_vignette_commands.setup(L"Comfort vignette");
+    }
+
+    // Full-frame native stereo draws the vignette and fade over each eye's image instead.
+    if (vr->is_native_stereo() && vr->is_native_full_frame()) {
+        return;
     }
 
     if (m_vignette_batch == nullptr || m_vignette_format != desc.Format) {
