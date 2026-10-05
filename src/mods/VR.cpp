@@ -616,7 +616,14 @@ bool VR::is_any_action_down() {
 
 void VR::update_hmd_state(int frame) {
     auto runtime = get_runtime();
-    if (frame % 2 == m_right_eye_interval && !is_using_async_aer()) {
+    if (frame % 2 == m_left_eye_interval) {
+        const bool native = m_native_stereo_requested && runtime->is_openxr();
+        if (native != m_native_stereo) {
+            spdlog::info("[VR] Native stereo {} at frame {}", native ? "on" : "off", frame);
+            m_native_stereo = native;
+        }
+    }
+    if (frame % 2 == m_right_eye_interval && !submits_every_frame()) {
         return;
     }
 
@@ -633,9 +640,10 @@ void VR::update_hmd_state(int frame) {
     runtime->update_matrices(m_nearz, m_farz);
     if(runtime->is_openxr()) {
         auto& pipeline_state = m_openxr->get_pipeline_state();
+        GlobalPool::submit_openxr_view_pair(pipeline_state.stage_views[0], pipeline_state.stage_views[1], frame);
         GlobalPool::submit_openxr_pose(pipeline_state.stage_views[frame % 2].pose, frame);
         GlobalPool::submit_openxr_fov(pipeline_state.active_fov[frame % 2], frame);
-        if (!is_using_async_aer()) {
+        if (!submits_every_frame()) {
             GlobalPool::submit_openxr_pose(pipeline_state.stage_views[(frame + 1) % 2].pose, frame + 1);
             GlobalPool::submit_openxr_fov(pipeline_state.active_fov[(frame + 1) % 2], frame + 1);
         }
@@ -793,7 +801,7 @@ Vector4f VR::get_current_offset() {
 
     std::shared_lock _{ get_runtime()->eyes_mtx };
 
-    if (m_engine_frame_count % 2 == m_left_eye_interval) {
+    if (m_native_stereo || m_engine_frame_count % 2 == m_left_eye_interval) {
         //return Vector4f{m_eye_distance * -1.0f, 0.0f, 0.0f, 0.0f};
         return get_runtime()->eyes[vr::Eye_Left][3];
     }
@@ -802,9 +810,25 @@ Vector4f VR::get_current_offset() {
     //return Vector4f{m_eye_distance, 0.0f, 0.0f, 0.0f};
 }
 
+Matrix4x4f VR::get_eye_transform(VRRuntime::Eye eye) {
+    if (!is_hmd_active()) {
+        return glm::identity<Matrix4x4f>();
+    }
+
+    std::shared_lock _{get_runtime()->eyes_mtx};
+
+    auto transform = get_runtime()->eyes[eye == VRRuntime::Eye::LEFT ? vr::Eye_Left : vr::Eye_Right];
+    transform[3] = glm::vec4(glm::vec3(transform[3]) * m_world_scale_option->value(), 1.0f);
+    return transform;
+}
+
 Matrix4x4f VR::get_current_eye_transform(bool flip) {
     if (!is_hmd_active()) {
         return glm::identity<Matrix4x4f>();
+    }
+
+    if (m_native_stereo) {
+        return get_eye_transform(flip ? VRRuntime::Eye::RIGHT : VRRuntime::Eye::LEFT);
     }
 
     std::shared_lock _{get_runtime()->eyes_mtx};
@@ -847,7 +871,7 @@ void VR::on_pre_imgui_frame() {
 }
 
 VRRuntime::Eye VR::get_current_render_eye() const {
-    if (m_engine_frame_count % 2 == m_left_eye_interval) {
+    if (m_native_stereo || m_engine_frame_count % 2 == m_left_eye_interval) {
         return VRRuntime::Eye::LEFT;
     }
 
@@ -862,13 +886,13 @@ void VR::on_present() {
     }
 //    m_presenter_frame_count = m_render_frame_count;
     utility::ScopeGuard _guard {[&]() {
-        if (is_using_async_aer() || (m_presenter_frame_count + 1) % 2 == m_left_eye_interval) {
+        if (submits_every_frame() || (m_presenter_frame_count + 1) % 2 == m_left_eye_interval) {
             SetEvent(m_present_finished_event);
         }
 
     }};
 
-    if (is_using_async_aer() || (m_presenter_frame_count + 1) % 2 == m_left_eye_interval) {
+    if (submits_every_frame() || (m_presenter_frame_count + 1) % 2 == m_left_eye_interval) {
         ResetEvent(m_present_finished_event);
     }
 
@@ -923,7 +947,7 @@ void VR::on_present() {
     const auto renderer = g_framework->get_renderer_type();
     vr::EVRCompositorError e = vr::EVRCompositorError::VRCompositorError_None;
 
-    if (((m_presenter_frame_count % 2 == m_left_eye_interval) || is_using_async_aer()) && runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::LATE) {
+    if (((m_presenter_frame_count % 2 == m_left_eye_interval) || submits_every_frame()) && runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::LATE) {
         //TODO LATE does not work
         const auto had_sync = runtime->got_first_sync;
         runtime->synchronize_frame(m_presenter_frame_count + 1);
@@ -988,7 +1012,7 @@ void VR::on_post_present() {
     //TODO move to after engine tick
     detect_controllers();
 
-    if (m_presenter_frame_count % 2 == m_left_eye_interval || is_using_async_aer()) {
+    if (m_presenter_frame_count % 2 == m_left_eye_interval || submits_every_frame()) {
         if (runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::VERY_LATE || !runtime->got_first_sync) {
             const auto had_sync = runtime->got_first_sync;
             runtime->synchronize_frame(m_presenter_frame_count);
@@ -1030,7 +1054,7 @@ void VR::on_begin_rendering(int frame) {
     m_in_render = true;
 //    m_render_frame_count = m_engine_frame_count;
 //    on_wait_rendering(entry);
-    if (frame % 2 == m_left_eye_interval || is_using_async_aer()) {
+    if (frame % 2 == m_left_eye_interval || submits_every_frame()) {
         if(runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::EARLY) {
             if (runtime->is_openxr()) {
                 if (g_framework->get_renderer_type() == Framework::RendererType::D3D11) {
@@ -1074,7 +1098,7 @@ void VR::on_wait_rendering(int frame) {
     // to be signaled
     // only on the left eye interval because we need the right eye
     // to start render work as soon as possible
-    if (((frame) % 2) == m_left_eye_interval || is_using_async_aer()) {
+    if (((frame) % 2) == m_left_eye_interval || submits_every_frame()) {
         if (WaitForSingleObject(m_present_finished_event, 333) == WAIT_TIMEOUT) {
 //            timed_out = true;
         }

@@ -169,6 +169,26 @@ public:
         return m_use_async_aer->value();
     }
 
+    // Both eyes are rendered every engine frame, side by side in one back buffer (left eye in the left half).
+    // Latched at the start of an eye pair so a mode change never splits a submitted pair.
+    bool is_native_stereo() const { return m_native_stereo; }
+    void request_native_stereo(bool enable) { m_native_stereo_requested = enable; }
+    // Native frames whose right half has no fresh image (e.g. a view without a right-eye camera) show the left eye in both.
+    void set_native_mono_frame(bool mono) { m_native_mono_frame = mono; }
+    bool is_native_mono_frame() const { return m_native_mono_frame; }
+    bool submits_every_frame() const { return is_using_async_aer() || m_native_stereo; }
+    // The next presented back buffer is saved as a PNG to this path.
+    void request_backbuffer_dump(std::wstring path) {
+        std::scoped_lock _{ m_dump_mutex };
+        m_dump_path = std::move(path);
+    }
+    std::wstring take_backbuffer_dump_request() {
+        std::scoped_lock _{ m_dump_mutex };
+        return std::exchange(m_dump_path, {});
+    }
+
+    void set_async_aer(bool enable) { m_use_async_aer->value() = enable; }
+
     bool is_gui_enabled() const {
         return true;
     }
@@ -184,6 +204,7 @@ public:
 
     Vector4f get_current_offset();
     Matrix4x4f get_current_eye_transform(bool flip = false);
+    Matrix4x4f get_eye_transform(VRRuntime::Eye eye);
     Matrix4x4f get_current_projection_matrix(bool flip = false);
 
     auto& get_controllers() const {
@@ -593,6 +614,11 @@ public:
     int m_render_frame_count{0};
     int m_presenter_frame_count{0};
     bool m_skip_next_present{false};
+    std::atomic<bool> m_native_stereo{false};
+    std::atomic<bool> m_native_stereo_requested{false};
+    std::atomic<bool> m_native_mono_frame{false};
+    std::mutex m_dump_mutex{};
+    std::wstring m_dump_path{};
 
 private:
     int m_last_frame_count{-1};

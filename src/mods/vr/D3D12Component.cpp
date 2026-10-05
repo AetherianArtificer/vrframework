@@ -10,6 +10,9 @@
 #include "D3D12Component.hpp"
 #include <../../../_deps/directxtk12-src/Src/d3dx12.h>
 #include <d3dcompiler.h>
+#include <../../../_deps/directxtk12-src/Inc/ScreenGrab.h>
+#include <utility/String.hpp>
+#include <wincodec.h>
 
 typedef HRESULT(WINAPI* PFN_D3D12_GET_DEBUG_INTERFACE)(REFIID, void**);
 
@@ -49,6 +52,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         draw_comfort_vignette(vr, backbuffer.Get());
     }
 
+    const bool native_stereo = vr->is_native_stereo() && vr->get_runtime()->is_openxr();
+
     if (!m_backbuffer_is_8bit) {
         auto command_list = m_backbuffer_copy.commands.cmd_list.Get();
         m_backbuffer_copy.commands.wait(INFINITE);
@@ -69,7 +74,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     bool is_right_eye_frame = !is_left_eye_frame;
     
     if (runtime->is_openxr() && runtime->ready() && vr->m_openxr->frame_began) {
-        if (is_right_eye_frame) {
+        if (is_right_eye_frame || native_stereo) {
             auto fw_rt = g_framework->get_rendertarget_d3d12();
 
             if (fw_rt && g_framework->is_drawing_ui()) {
@@ -78,8 +83,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     }
 
-    // If m_frame_count is even, we're rendering the left eye.
-    if (is_left_eye_frame) {
+    if (native_stereo) {
+        dump_backbuffer(vr, backbuffer.Get());
+        if (vr->m_openxr->ready()) {
+            copy_native_stereo_eyes(vr, backbuffer.Get());
+        }
+    } else if (is_left_eye_frame) {
+        // If m_frame_count is even, we're rendering the left eye.
         // OpenXR texture
         if (runtime->is_openxr() && vr->m_openxr->ready()) {
 #ifdef OPENXR_FRAME_CROP_COPY
@@ -217,7 +227,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     vr::EVRCompositorError e = vr::EVRCompositorError::VRCompositorError_None;
 
-    if (is_right_eye_frame || vr->is_using_async_aer()) {
+    if (is_right_eye_frame || vr->submits_every_frame()) {
         ////////////////////////////////////////////////////////////////////////////////
         // OpenXR start ////////////////////////////////////////////////////////////////
         ////////////////////////////////////////////////////////////////////////////////
@@ -274,7 +284,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
 
         // Allows the desktop window to be recorded.
-        if (vr->m_desktop_fix->value() && is_right_eye_frame) {
+        if (vr->m_desktop_fix->value() && (is_right_eye_frame || native_stereo)) {
             if (runtime->ready() && m_prev_backbuffer != backbuffer && m_prev_backbuffer != nullptr) {
                 auto& copier = m_generic_copiers[vr->m_presenter_frame_count % m_generic_copiers.size()];
                 copier.wait(INFINITE);
@@ -448,6 +458,117 @@ void D3D12Component::setup() {
     m_force_reset = false;
 }
 
+bool D3D12Component::setup_native_stereo_textures(ID3D12Resource* backbuffer, VR* vr) {
+    auto device = g_framework->get_d3d12_hook()->get_device();
+    const auto bb_desc = backbuffer->GetDesc();
+
+    D3D12_HEAP_PROPERTIES heap_props{};
+    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    if (m_native_source.texture == nullptr || m_native_source.texture->GetDesc().Width != bb_desc.Width ||
+        m_native_source.texture->GetDesc().Height != bb_desc.Height || m_native_source.texture->GetDesc().Format != bb_desc.Format) {
+        auto desc = bb_desc;
+        desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+        ComPtr<ID3D12Resource> texture{};
+        if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_PRESENT, nullptr, IID_PPV_ARGS(&texture)))) {
+            spdlog::error("[VR] Failed to create the native stereo source texture");
+            return false;
+        }
+        texture->SetName(L"Native stereo source");
+        if (!m_native_source.setup(device, texture.Get(), std::nullopt, std::nullopt, L"Native stereo source")) {
+            return false;
+        }
+    }
+
+    for (uint32_t eye = 0; eye < 2; ++eye) {
+        const auto& swapchain = vr->m_openxr->swapchains[eye];
+        auto& ctx = m_native_eye[eye];
+        if (ctx.texture != nullptr && ctx.texture->GetDesc().Width == (UINT64)swapchain.width && ctx.texture->GetDesc().Height == (UINT)swapchain.height) {
+            continue;
+        }
+        auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, swapchain.width, swapchain.height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        ComPtr<ID3D12Resource> texture{};
+        if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&texture)))) {
+            spdlog::error("[VR] Failed to create the native stereo eye texture");
+            return false;
+        }
+        texture->SetName(eye == 0 ? L"Native stereo left eye" : L"Native stereo right eye");
+        if (!ctx.setup(device, texture.Get(), std::nullopt, std::nullopt, L"Native stereo eye")) {
+            return false;
+        }
+        spdlog::info("[VR] Native stereo eye {} texture {}x{} from back buffer {}x{}", eye, swapchain.width, swapchain.height, bb_desc.Width, bb_desc.Height);
+    }
+    return true;
+}
+
+void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer) {
+    if (!setup_native_stereo_textures(backbuffer, vr)) {
+        return;
+    }
+
+    const auto desc = backbuffer->GetDesc();
+    const auto half_width = (LONG)(desc.Width / 2);
+    const bool mono = vr->is_native_mono_frame();
+
+    auto& commands = m_native_source.commands;
+    commands.wait(INFINITE);
+    commands.copy(backbuffer, m_native_source.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT);
+
+    // Each half of the side-by-side buffer is stretched over its eye's whole image.
+    auto command_list = commands.cmd_list.Get();
+    for (uint32_t eye = 0; eye < 2; ++eye) {
+        auto& dst = m_native_eye[eye];
+        const auto dst_desc = dst.texture->GetDesc();
+        const LONG left = (mono ? 0 : (LONG)eye) * half_width;
+        const RECT source{ left, 0, left + half_width, (LONG)desc.Height };
+
+        D3D12_RESOURCE_BARRIER barriers[]{
+            CD3DX12_RESOURCE_BARRIER::Transition(dst.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
+            CD3DX12_RESOURCE_BARRIER::Transition(m_native_source.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+        };
+        command_list->ResourceBarrier(2, barriers);
+
+        D3D12_VIEWPORT viewport{ 0.0f, 0.0f, (float)dst_desc.Width, (float)dst_desc.Height, D3D12_MIN_DEPTH, D3D12_MAX_DEPTH };
+        D3D12_RECT scissor{ 0, 0, (LONG)dst_desc.Width, (LONG)dst_desc.Height };
+        const auto rtv = dst.get_rtv();
+        command_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+        command_list->RSSetViewports(1, &viewport);
+        command_list->RSSetScissorRects(1, &scissor);
+        ID3D12DescriptorHeap* heaps[]{ m_native_source.srv_heap->Heap() };
+        command_list->SetDescriptorHeaps(1, heaps);
+
+        m_sprite_batch->SetViewport(viewport);
+        m_sprite_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
+        const RECT dest{ 0, 0, (LONG)dst_desc.Width, (LONG)dst_desc.Height };
+        m_sprite_batch->Draw(m_native_source.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)desc.Width, (uint32_t)desc.Height }, dest, &source, DirectX::Colors::White);
+        m_sprite_batch->End();
+
+        barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        command_list->ResourceBarrier(2, barriers);
+    }
+    commands.execute();
+
+    for (uint32_t eye = 0; eye < 2; ++eye) {
+        m_openxr.copy(eye, m_native_eye[eye].texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+}
+
+void D3D12Component::dump_backbuffer(VR* vr, ID3D12Resource* backbuffer) {
+    auto path = vr->take_backbuffer_dump_request();
+    if (path.empty()) {
+        return;
+    }
+    auto command_queue = g_framework->get_d3d12_hook()->get_command_queue();
+    const auto hr = DirectX::SaveWICTextureToFile(command_queue, backbuffer, GUID_ContainerFormatPng, path.c_str(), D3D12_RESOURCE_STATE_PRESENT,
+                                                  D3D12_RESOURCE_STATE_PRESENT);
+    const auto desc = backbuffer->GetDesc();
+    spdlog::info("[VR] Back buffer {}x{} saved to {} (hr {:x})", desc.Width, desc.Height, utility::narrow(path), (uint32_t)hr);
+}
+
 void D3D12Component::draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer) {
     const float strength = vr->get_comfort_vignette();
     const float fade = vr->get_comfort_fade();
@@ -544,14 +665,17 @@ void D3D12Component::draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer) {
     // Stronger vignettes shrink the clear area; weak ones also fade in.
     const float scale = 2.0f - std::clamp(strength, 0.0f, 1.0f);
     const float alpha = std::clamp(strength / 0.3f, 0.0f, 1.0f);
-    const RECT dest{
-        (LONG)(width * 0.5f * (1.0f - scale)), (LONG)(height * 0.5f * (1.0f - scale)),
-        (LONG)(width * 0.5f * (1.0f + scale)), (LONG)(height * 0.5f * (1.0f + scale)),
-    };
+    const int eye_count = vr->is_native_stereo() ? 2 : 1;
+    const float eye_width = width / (float)eye_count;
 
     m_vignette_batch->SetViewport(viewport);
     m_vignette_batch->Begin(command_list);
-    if (strength > 0.01f) {
+    for (int eye = 0; eye < eye_count && strength > 0.01f; ++eye) {
+        const float x0 = eye_width * (float)eye;
+        const RECT dest{
+            (LONG)(x0 + eye_width * 0.5f * (1.0f - scale)), (LONG)(height * 0.5f * (1.0f - scale)),
+            (LONG)(x0 + eye_width * 0.5f * (1.0f + scale)), (LONG)(height * 0.5f * (1.0f + scale)),
+        };
         m_vignette_batch->Draw(m_vignette_srv_heap->GetGpuHandle(0), DirectX::XMUINT2{ 256, 256 }, dest, DirectX::XMVECTORF32{ { { 1.0f, 1.0f, 1.0f, alpha } } });
     }
     if (fade > 0.01f) {
@@ -894,20 +1018,20 @@ void D3D12Component::OpenXR::copy(uint32_t swapchain_idx, ID3D12Resource* resour
             } else {
                 UINT offsetX = 0;
                 UINT offsetY = 0;
-                if(src_box->right > swapchain.width) {
-                    src_box->left = (src_box->right - swapchain.width) >> 1;
+                const UINT box_width = src_box->right - src_box->left;
+                const UINT box_height = src_box->bottom - src_box->top;
+                if (box_width > (UINT)swapchain.width) {
+                    src_box->left += (box_width - swapchain.width) >> 1;
                     src_box->right = src_box->left + swapchain.width;
-                }
-                else {
-                    offsetX = (swapchain.width - src_box->right) >> 1;
+                } else {
+                    offsetX = (swapchain.width - box_width) >> 1;
                 }
 
-                if(src_box->bottom > swapchain.height) {
-                    src_box->top = (src_box->bottom - swapchain.height) >> 1;
+                if (box_height > (UINT)swapchain.height) {
+                    src_box->top += (box_height - swapchain.height) >> 1;
                     src_box->bottom = src_box->top + swapchain.height;
-                }
-                else {
-                    offsetY = (swapchain.height - src_box->bottom) >> 1;
+                } else {
+                    offsetY = (swapchain.height - box_height) >> 1;
                 }
                 texture_ctx->commands.copy_region(
                     resource,

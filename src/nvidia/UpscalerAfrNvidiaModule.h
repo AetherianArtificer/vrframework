@@ -37,6 +37,9 @@ public:
     UpscalerAfrNvidiaModule() = default;
     ~UpscalerAfrNvidiaModule() override = default;
 
+    // Native stereo evaluates the upscaler once per view; the game marks the right eye's view on the evaluating thread.
+    static void set_secondary_view(bool secondary) { t_secondary_view = secondary; }
+
 private:
     void InstallHooks();
 
@@ -58,6 +61,16 @@ private:
     std::unique_ptr<FunctionHook> m_sl_dvc_set_options_hook{nullptr};
 
     uint32_t m_afr_viewport_id{1024 + 1};
+    static inline thread_local bool t_secondary_view{false};
+    // Eye of the last tags set on this thread, used by the evaluate and constants calls that follow them.
+    static inline thread_local bool t_last_tags_secondary{false};
+    std::atomic<int> m_native_log_budget{24};
+
+    static bool tags_in_right_half(const sl::ResourceTag* tags, uint32_t num_tags);
+    static bool inputs_in_right_half(sl::BaseStructure** inputs, uint32_t num_inputs);
+    void log_native_call(const char* call, bool secondary, const sl::ResourceTag* tag);
+
+    static bool use_second_viewport(uint32_t frame);
 
     void ReprojectMotionVectors(const sl::FrameToken& frame, sl::BaseStructure** inputs, uint32_t numInputs, void* cmdBuffer);
 

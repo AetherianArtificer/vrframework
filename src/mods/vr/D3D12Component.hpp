@@ -49,12 +49,18 @@ private:
     void setup_sprite_batch_pso(DXGI_FORMAT output_format);
     void render_srv_to_rtv(ID3D12GraphicsCommandList* command_list, const d3d12::TextureContext& src, const d3d12::TextureContext& dst, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state);
     void draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer);
+    void copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer);
+    bool setup_native_stereo_textures(ID3D12Resource* backbuffer, VR* vr);
+    void dump_backbuffer(VR* vr, ID3D12Resource* backbuffer);
 
     template <typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
 
     ComPtr<ID3D12Resource> m_prev_backbuffer{};
     d3d12::TextureContext m_backbuffer_copy{};
     d3d12::TextureContext m_converted_eye_tex{};
+    // Native stereo: a shader-readable copy of the back buffer, and each eye scaled to its swapchain size.
+    d3d12::TextureContext m_native_source{};
+    std::array<d3d12::TextureContext, 2> m_native_eye{};
     std::array<d3d12::ResourceCopier, 3> m_generic_copiers{};
 
     std::unique_ptr<DirectX::DX12::GraphicsMemory> m_graphics_memory{};
