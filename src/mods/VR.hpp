@@ -172,8 +172,11 @@ public:
     bool is_native_stereo() const { return m_native_stereo; }
     void request_native_stereo(bool enable) { m_native_stereo_requested = enable; }
     // Frames without both eye images (loading screens, fullscreen menus) show the back buffer to both eyes.
-    void set_native_mono_frame(bool mono) { m_native_mono_frame = mono; }
-    bool is_native_mono_frame() const { return m_native_mono_frame; }
+    // Decided on the game thread for the frame it starts, read when that frame is presented.
+    void set_native_mono_frame(bool mono) { m_frame_mono[m_engine_frame_count & 7] = mono; }
+    bool is_native_mono_frame() const { return m_frame_mono[m_presenter_frame_count & 7]; }
+    void set_frame_flat(bool flat) { m_frame_flat[m_engine_frame_count & 7] = flat; }
+    bool is_presented_frame_flat() const { return m_frame_flat[m_presenter_frame_count & 7]; }
     // The texture stays in PIXEL_SHADER_RESOURCE state between frames.
     void set_native_eye_source(uint32_t eye, ID3D12Resource* texture) {
         std::scoped_lock _{ m_eye_source_mutex };
@@ -677,7 +680,8 @@ public:
     int m_presenter_frame_count{0};
     std::atomic<bool> m_native_stereo{false};
     std::atomic<bool> m_native_stereo_requested{false};
-    std::atomic<bool> m_native_mono_frame{false};
+    std::array<std::atomic<bool>, 8> m_frame_mono{};
+    std::array<std::atomic<bool>, 8> m_frame_flat{};
     std::atomic<bool> m_native_hud_panel{false};
     std::atomic<float> m_native_hud_panel_width{2.0f};
     std::atomic<float> m_native_hud_panel_distance{2.0f};

@@ -76,7 +76,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         std::vector<XrCompositionLayerBaseHeader*> quad_layers{};
         auto& openxr_overlay = vr->get_overlay_component().get_openxr();
 
-        if (m_native_hud_ready && !ModSettings::showFlatScreenDisplay() && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI)) {
+        if (m_native_hud_ready && !vr->is_presented_frame_flat() && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI)) {
             if (const auto hud_quad = openxr_overlay.generate_game_ui_quad()) {
                 quad_layers.push_back((XrCompositionLayerBaseHeader*)&hud_quad->get());
             }

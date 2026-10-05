@@ -12,6 +12,6 @@ namespace ModSettings {
         if (vr->is_hmd_active() && vr->get_runtime()->is_openvr()) {
             return false;
         }
-        return g_internalSettings.forceFlatScreen || g_internalSettings.showQuadDisplay;
+        return g_internalSettings.forceFlatScreen || g_internalSettings.showQuadDisplayFrame;
     }
 }

@@ -1686,7 +1686,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
     if (this->began_frame_state.shouldRender == XR_TRUE) {
         projection_layer_views.resize(current_pipeline->stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
-        if (!ModSettings::showFlatScreenDisplay()) {
+        if (!VR::get()->is_presented_frame_flat()) {
             for (auto i = 0; i < projection_layer_views.size(); ++i) {
                 const auto& swapchain = this->swapchains[i];
                 // Both eyes come from the same frame, each with its own view.
