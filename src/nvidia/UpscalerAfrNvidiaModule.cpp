@@ -198,50 +198,8 @@ void UpscalerAfrNvidiaModule::ReprojectMotionVectors(const sl::FrameToken& frame
 
 bool UpscalerAfrNvidiaModule::use_second_viewport(uint32_t frame)
 {
-    static auto vr = VR::get();
-    if (vr->is_native_stereo()) {
-        return t_secondary_view || t_last_tags_secondary;
-    }
-    return frame % 2 == 0;
-}
-
-bool UpscalerAfrNvidiaModule::tags_in_right_half(const sl::ResourceTag* tags, uint32_t num_tags)
-{
-    for (uint32_t i = 0; tags != nullptr && i < num_tags; ++i) {
-        const auto& tag = tags[i];
-        if (tag.extent && tag.resource && tag.resource->native) {
-            const auto width = ((ID3D12Resource*)tag.resource->native)->GetDesc().Width;
-            if (tag.extent.left > 0 && tag.extent.left >= width / 4) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-bool UpscalerAfrNvidiaModule::inputs_in_right_half(sl::BaseStructure** inputs, uint32_t num_inputs)
-{
-    for (uint32_t i = 0; inputs != nullptr && i < num_inputs; ++i) {
-        if (inputs[i] && inputs[i]->structType == sl::ResourceTag::s_structType && tags_in_right_half((const sl::ResourceTag*)inputs[i], 1)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void UpscalerAfrNvidiaModule::log_native_call(const char* call, bool secondary, const sl::ResourceTag* tag)
-{
-    if (m_native_log_budget.fetch_sub(1) <= 0) {
-        return;
-    }
-    if (tag && tag->resource && tag->resource->native) {
-        const auto desc = ((ID3D12Resource*)tag->resource->native)->GetDesc();
-        spdlog::info("[Stereo] {} on thread {:x}: right eye {} (pass flag {}), tag type {} resource {:p} {}x{} extent ({}, {}, {}x{})", call, GetCurrentThreadId(),
-                     secondary, t_secondary_view, (uint32_t)tag->type, tag->resource->native, desc.Width, desc.Height, tag->extent.left, tag->extent.top,
-                     tag->extent.width, tag->extent.height);
-    } else {
-        spdlog::info("[Stereo] {} on thread {:x}: right eye {} (pass flag {})", call, GetCurrentThreadId(), secondary, t_secondary_view);
-    }
+    // The right eye's DLSS passes run with the secondary view flag set and keep their own history.
+    return t_secondary_view;
 }
 
 sl::Result UpscalerAfrNvidiaModule::on_slSetTag(sl::ViewportHandle& viewport, const sl::ResourceTag* tags, uint32_t numTags, sl::CommandBuffer* cmdBuffer)
@@ -251,10 +209,6 @@ sl::Result UpscalerAfrNvidiaModule::on_slSetTag(sl::ViewportHandle& viewport, co
     static auto            vr          = VR::get();
     // spdlog::error("UNEXPECTED CALL TO slSetTag");
     // exit(1);
-    if (vr->is_native_stereo()) {
-        t_last_tags_secondary = t_secondary_view || tags_in_right_half(tags, numTags);
-        instance->log_native_call("slSetTag", t_last_tags_secondary, numTags > 0 ? &tags[0] : nullptr);
-    }
     if(use_second_viewport(vr->m_render_frame_count) && instance->m_enabled->value()) {
         sl::ViewportHandle afr_viewport_handle{instance->m_afr_viewport_id};
         return original_fn(afr_viewport_handle, tags, numTags, cmdBuffer);
@@ -312,12 +266,6 @@ sl::Result UpscalerAfrNvidiaModule::on_slEvaluateFeature(sl::Feature feature, co
     }
 #endif
 
-    if (vr->is_native_stereo() && supported_afr_feature(feature)) {
-        if (inputs_in_right_half(inputs, numInputs)) {
-            t_last_tags_secondary = true;
-        }
-        instance->log_native_call("slEvaluateFeature", use_second_viewport(frame), nullptr);
-    }
     if(use_second_viewport(frame) && supported_afr_feature(feature) && instance->m_enabled->value()) {
         sl::ViewportHandle afr_viewport_handle{instance->m_afr_viewport_id};
         std::vector<sl::BaseStructure*> afr_inputs{};
@@ -353,10 +301,6 @@ sl::Result UpscalerAfrNvidiaModule::on_slSetConstants(sl::Constants& values, con
 #endif
 
 
-    static auto vr = VR::get();
-    if (vr->is_native_stereo()) {
-        instance->log_native_call("slSetConstants", use_second_viewport(frame), nullptr);
-    }
     if(use_second_viewport(frame) && instance->m_enabled->value()) {
         sl::ViewportHandle afr_viewport_handle{instance->m_afr_viewport_id};
         return original_fn(values, frame, afr_viewport_handle);

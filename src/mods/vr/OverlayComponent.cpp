@@ -92,7 +92,7 @@ void OverlayComponent::update_input_mouse_emulation() {
     if (m_framework_intersect_state.intersecting && VR::get()->is_using_controllers()) {
         auto vr = VR::get();
         auto& io = ImGui::GetIO();
-        const auto is_initial_frame = vr->submits_every_frame() || vr->m_engine_frame_count % 2 == vr->m_left_eye_interval;
+        const auto is_initial_frame = true;
 
         const auto x = m_framework_intersect_state.swapchain_intersection_point.x;
         const auto y = m_framework_intersect_state.swapchain_intersection_point.y;
@@ -239,7 +239,7 @@ void OverlayComponent::update_input_openvr() {
 
     auto vr = VR::get();
     auto& io = ImGui::GetIO();
-    const auto is_initial_frame = vr->submits_every_frame() || vr->m_engine_frame_count % 2 == vr->m_left_eye_interval;
+    const auto is_initial_frame = true;
 
     // Restore the previous frame's input state
 //    memcpy(io.KeysDown, m_initial_imgui_input_state.KeysDown, sizeof(io.KeysDown));

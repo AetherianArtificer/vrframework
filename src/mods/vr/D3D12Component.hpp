@@ -40,15 +40,13 @@ public:
 
     const auto& get_backbuffer_size() const { return m_backbuffer_size; }
 
-    auto is_initialized() const { return m_openvr.left_eye_tex[0].texture != nullptr; }
+    auto is_initialized() const { return m_initialized; }
 
     auto& openxr() { return m_openxr; }
 
 private:
     void setup();
-    void setup_sprite_batch_pso(DXGI_FORMAT output_format);
-    void render_srv_to_rtv(ID3D12GraphicsCommandList* command_list, const d3d12::TextureContext& src, const d3d12::TextureContext& dst, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state);
-    void draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer);
+    void prepare_comfort_textures(VR* vr);
     void copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer);
     bool setup_native_stereo_textures(ID3D12Resource* backbuffer, VR* vr);
     void dump_backbuffer(VR* vr, ID3D12Resource* backbuffer);
@@ -56,8 +54,6 @@ private:
     template <typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
 
     ComPtr<ID3D12Resource> m_prev_backbuffer{};
-    d3d12::TextureContext m_backbuffer_copy{};
-    d3d12::TextureContext m_converted_eye_tex{};
     // Native stereo: a shader-readable copy of the back buffer, and each eye scaled to its swapchain size.
     d3d12::TextureContext m_native_source{};
     // Copies each half without blending; menus leave the back buffer partly transparent.
@@ -77,60 +73,12 @@ private:
     std::array<d3d12::ResourceCopier, 3> m_generic_copiers{};
 
     std::unique_ptr<DirectX::DX12::GraphicsMemory> m_graphics_memory{};
-    std::unique_ptr<DirectX::DX12::SpriteBatch> m_sprite_batch{};
 
-    d3d12::CommandContext                       m_vignette_commands{};
     ComPtr<ID3D12Resource>                      m_vignette_texture{};
     ComPtr<ID3D12Resource>                      m_fade_texture{};
     std::unique_ptr<DirectX::DescriptorHeap>    m_vignette_srv_heap{};
-    std::unique_ptr<DirectX::DescriptorHeap>    m_vignette_rtv_heap{};
-    std::unique_ptr<DirectX::DX12::SpriteBatch> m_vignette_batch{};
-    DXGI_FORMAT                                 m_vignette_format{ DXGI_FORMAT_UNKNOWN };
 
-    // Mimicking what OpenXR does.
-    struct OpenVR {
-        d3d12::TextureContext& get_left(const bool past = false) {
-            const auto counter = past ? (this->texture_counter - 1) : this->texture_counter;
-            auto& ctx = this->left_eye_tex[counter % left_eye_tex.size()];
-            return ctx;
-        }
-
-        d3d12::TextureContext& get_right(const bool past = false) {
-            const auto counter = past ? (this->texture_counter - 1) : this->texture_counter;
-            auto& ctx = this->right_eye_tex[counter % right_eye_tex.size()];
-            return ctx;
-        }
-
-        d3d12::TextureContext& acquire_left() {
-            auto& ctx = get_left();
-            ctx.commands.wait(INFINITE);
-
-            return ctx;
-        }
-
-        d3d12::TextureContext& acquire_right() {
-            auto& ctx = get_right();
-            ctx.commands.wait(INFINITE);
-
-            return ctx;
-        }
-
-        void copy_left(ID3D12Resource* src) {
-            auto& ctx = this->acquire_left();
-            ctx.commands.copy(src, ctx.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            ctx.commands.execute();
-        }
-
-        void copy_right(ID3D12Resource* src) {
-            auto& ctx = this->acquire_right();
-            ctx.commands.copy(src, ctx.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            ctx.commands.execute();
-        }
-
-        std::array<d3d12::TextureContext, 3> left_eye_tex{};
-        std::array<d3d12::TextureContext, 3> right_eye_tex{};
-        uint32_t texture_counter{0};
-    } m_openvr;
+    bool m_initialized{false};
 
     struct OpenXR {
         void initialize(XrSessionCreateInfo& session_info);
@@ -176,7 +124,6 @@ private:
     } m_openxr;
 
     uint32_t m_backbuffer_size[2]{};
-    bool m_backbuffer_is_8bit{false};
     bool m_force_reset{false};
     bool m_crop_copy{false};
 };

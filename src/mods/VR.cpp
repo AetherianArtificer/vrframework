@@ -24,28 +24,15 @@ std::shared_ptr<VR>& VR::get() {
 
 // Called when the mod is initialized
 std::optional<std::string> VR::on_initialize_d3d_thread() try {
-    auto openvr_error = initialize_openvr();
+    // OpenXR only: every PC runtime (SteamVR included) provides it, and native stereo is built on it.
+    m_openvr->is_hmd_active = false;
+    m_openvr->was_hmd_active = false;
+    m_openvr->needs_pose_update = false;
 
-    if (openvr_error || !m_openvr->loaded) {
-        if (m_openvr->error) {
-            spdlog::info("OpenVR failed to load: {}", *m_openvr->error);
-        }
+    auto openxr_error = initialize_openxr();
 
-        m_openvr->is_hmd_active = false;
-        m_openvr->was_hmd_active = false;
-        m_openvr->needs_pose_update = false;
-
-        // Attempt to load OpenXR instead
-        auto openxr_error = initialize_openxr();
-
-        if (openxr_error || !m_openxr->loaded) {
-            m_openxr->needs_pose_update = false;
-        }
-    } else {
-        m_openxr->error = 
-R"(OpenVR loaded first.
-If you want to use OpenXR, remove the openvr_api.dll from your game folder, 
-and place the openxr_loader.dll in the same folder.)";
+    if (openxr_error || !m_openxr->loaded) {
+        m_openxr->needs_pose_update = false;
     }
 
     if (!get_runtime()->loaded) {
@@ -616,15 +603,10 @@ bool VR::is_any_action_down() {
 
 void VR::update_hmd_state(int frame) {
     auto runtime = get_runtime();
-    if (frame % 2 == m_left_eye_interval) {
-        const bool native = m_native_stereo_requested && runtime->is_openxr();
-        if (native != m_native_stereo) {
-            spdlog::info("[VR] Native stereo {} at frame {}", native ? "on" : "off", frame);
-            m_native_stereo = native;
-        }
-    }
-    if (frame % 2 == m_right_eye_interval && !submits_every_frame()) {
-        return;
+    const bool native = m_native_stereo_requested && runtime->is_openxr();
+    if (native != m_native_stereo) {
+        spdlog::info("[VR] Native stereo {} at frame {}", native ? "on" : "off", frame);
+        m_native_stereo = native;
     }
 
     runtime->update_poses(frame);
@@ -641,20 +623,6 @@ void VR::update_hmd_state(int frame) {
     if(runtime->is_openxr()) {
         auto& pipeline_state = m_openxr->get_pipeline_state();
         GlobalPool::submit_openxr_view_pair(pipeline_state.stage_views[0], pipeline_state.stage_views[1], frame);
-        GlobalPool::submit_openxr_pose(pipeline_state.stage_views[frame % 2].pose, frame);
-        GlobalPool::submit_openxr_fov(pipeline_state.active_fov[frame % 2], frame);
-        if (!submits_every_frame()) {
-            GlobalPool::submit_openxr_pose(pipeline_state.stage_views[(frame + 1) % 2].pose, frame + 1);
-            GlobalPool::submit_openxr_fov(pipeline_state.active_fov[(frame + 1) % 2], frame + 1);
-        }
-    }
-
-    if(runtime->is_openvr()) {
-        const auto& hmd_pose = m_openvr->render_poses[vr::k_unTrackedDeviceIndex_Hmd];
-        GlobalPool::submit_openvr_pose(hmd_pose.mDeviceToAbsoluteTracking, frame);
-        if (!is_using_async_aer()) {
-            GlobalPool::submit_openvr_pose(hmd_pose.mDeviceToAbsoluteTracking, frame + 1);
-        }
     }
 
     runtime->got_first_poses = true;
@@ -794,22 +762,6 @@ void VR::recenter_gui(const glm::quat& from) {
     set_gui_rotation_offset(new_gui_offset);
 }
 
-Vector4f VR::get_current_offset() {
-    if (!is_hmd_active()) {
-        return Vector4f{};
-    }
-
-    std::shared_lock _{ get_runtime()->eyes_mtx };
-
-    if (m_native_stereo || m_engine_frame_count % 2 == m_left_eye_interval) {
-        //return Vector4f{m_eye_distance * -1.0f, 0.0f, 0.0f, 0.0f};
-        return get_runtime()->eyes[vr::Eye_Left][3];
-    }
-    
-    return get_runtime()->eyes[vr::Eye_Right][3];
-    //return Vector4f{m_eye_distance, 0.0f, 0.0f, 0.0f};
-}
-
 Matrix4x4f VR::get_eye_transform(VRRuntime::Eye eye) {
     if (!is_hmd_active()) {
         return glm::identity<Matrix4x4f>();
@@ -823,44 +775,8 @@ Matrix4x4f VR::get_eye_transform(VRRuntime::Eye eye) {
 }
 
 Matrix4x4f VR::get_current_eye_transform(bool flip) {
-    if (!is_hmd_active()) {
-        return glm::identity<Matrix4x4f>();
-    }
-
-    if (m_native_stereo) {
-        return get_eye_transform(flip ? VRRuntime::Eye::RIGHT : VRRuntime::Eye::LEFT);
-    }
-
-    std::shared_lock _{get_runtime()->eyes_mtx};
-
-    auto mod_count = flip ? m_right_eye_interval : m_left_eye_interval;
-
-    if (m_engine_frame_count % 2 == mod_count) {
-        auto leye = get_runtime()->eyes[vr::Eye_Left];
-        leye[3] = glm::vec4(glm::vec3(leye[3]) * m_world_scale_option->value(), 1.0f);
-        return leye;
-    }
-
-    auto reye = get_runtime()->eyes[vr::Eye_Right];
-    reye[3] = glm::vec4(glm::vec3(reye[3]) * m_world_scale_option->value(), 1.0f);
-    return reye;
+    return get_eye_transform(flip ? VRRuntime::Eye::RIGHT : VRRuntime::Eye::LEFT);
 }
-
-//Matrix4x4f VR::get_current_projection_matrix(bool flip) {
-//    if (!is_hmd_active()) {
-//        return glm::identity<Matrix4x4f>();
-//    }
-//
-//    std::shared_lock _{get_runtime()->eyes_mtx};
-//
-//    auto mod_count = flip ? m_right_eye_interval : m_left_eye_interval;
-//
-//    if (m_engine_frame_count % 2 == mod_count) {
-//        return get_runtime()->projections[(uint32_t)VRRuntime::Eye::LEFT];
-//    }
-//
-//    return get_runtime()->projections[(uint32_t)VRRuntime::Eye::RIGHT];
-//}
 
 void VR::on_pre_imgui_frame() {
     if (!get_runtime()->ready()) {
@@ -870,31 +786,14 @@ void VR::on_pre_imgui_frame() {
     m_overlay_component.on_pre_imgui_frame();
 }
 
-VRRuntime::Eye VR::get_current_render_eye() const {
-    if (m_native_stereo || m_engine_frame_count % 2 == m_left_eye_interval) {
-        return VRRuntime::Eye::LEFT;
-    }
-
-    return VRRuntime::Eye::RIGHT;
-}
-
 void VR::on_present() {
     SCOPE_PROFILER();
-    if(m_skip_next_present) {
-        m_skip_next_present = false;
-        return;
-    }
 //    m_presenter_frame_count = m_render_frame_count;
     utility::ScopeGuard _guard {[&]() {
-        if (submits_every_frame() || (m_presenter_frame_count + 1) % 2 == m_left_eye_interval) {
-            SetEvent(m_present_finished_event);
-        }
-
+        SetEvent(m_present_finished_event);
     }};
 
-    if (submits_every_frame() || (m_presenter_frame_count + 1) % 2 == m_left_eye_interval) {
-        ResetEvent(m_present_finished_event);
-    }
+    ResetEvent(m_present_finished_event);
 
     auto runtime = get_runtime();
 
@@ -947,7 +846,7 @@ void VR::on_present() {
     const auto renderer = g_framework->get_renderer_type();
     vr::EVRCompositorError e = vr::EVRCompositorError::VRCompositorError_None;
 
-    if (((m_presenter_frame_count % 2 == m_left_eye_interval) || submits_every_frame()) && runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::LATE) {
+    if (runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::LATE) {
         //TODO LATE does not work
         const auto had_sync = runtime->got_first_sync;
         runtime->synchronize_frame(m_presenter_frame_count + 1);
@@ -1012,7 +911,7 @@ void VR::on_post_present() {
     //TODO move to after engine tick
     detect_controllers();
 
-    if (m_presenter_frame_count % 2 == m_left_eye_interval || submits_every_frame()) {
+    {
         if (runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::VERY_LATE || !runtime->got_first_sync) {
             const auto had_sync = runtime->got_first_sync;
             runtime->synchronize_frame(m_presenter_frame_count);
@@ -1054,7 +953,7 @@ void VR::on_begin_rendering(int frame) {
     m_in_render = true;
 //    m_render_frame_count = m_engine_frame_count;
 //    on_wait_rendering(entry);
-    if (frame % 2 == m_left_eye_interval || submits_every_frame()) {
+    {
         if(runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::EARLY) {
             if (runtime->is_openxr()) {
                 if (g_framework->get_renderer_type() == Framework::RendererType::D3D11) {
@@ -1094,16 +993,9 @@ void VR::on_wait_rendering(int frame) {
         return;
     }
 
-    // wait for m_present_finished (std::condition_variable)
-    // to be signaled
-    // only on the left eye interval because we need the right eye
-    // to start render work as soon as possible
-    if (((frame) % 2) == m_left_eye_interval || submits_every_frame()) {
-        if (WaitForSingleObject(m_present_finished_event, 333) == WAIT_TIMEOUT) {
-//            timed_out = true;
-        }
-        ResetEvent(m_present_finished_event);
-    }
+    // Wait for the previous frame's present before starting this frame's render work.
+    WaitForSingleObject(m_present_finished_event, 333);
+    ResetEvent(m_present_finished_event);
 }
 
 void VR::on_xinput_get_capabilities(uint32_t* retval, uint32_t user_index, uint32_t flags, XINPUT_CAPABILITIES* capabilities) {
@@ -1190,8 +1082,6 @@ void VR::on_draw_ui() {
 
     ImGui::TextWrapped("VR Runtime: %s", get_runtime()->name().data());
     ImGui::TextWrapped("Render Resolution: %d x %d", get_runtime()->get_width(), get_runtime()->get_height());
-
-    m_use_async_aer->draw("Use Async AER");
 
     if (get_runtime()->is_openvr()) {
         ImGui::TextWrapped("Resolution can be changed in SteamVR");

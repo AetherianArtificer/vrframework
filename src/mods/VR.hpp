@@ -162,25 +162,13 @@ public:
 //    int32_t get_frame_count() const;
 //    int32_t get_game_frame_count() const;
 
-    bool is_using_async_aer() const {
-        // openVR has issues with 2 different poses at the same time for non steam native VR hmds like oculus
-        // for these exceptions need to implement viewport cropping and viewport reprojection
-        //TODO it looks like runtime does not fully support dx11 reprojeciton, I need to do it manually
-        return m_use_async_aer->value();
-    }
-
-    // Both eyes are rendered every engine frame, side by side in one back buffer (left eye in the left half).
-    // Latched at the start of an eye pair so a mode change never splits a submitted pair.
+    // Native stereo: both eyes render every engine frame, each over the whole frame, and the game hands over a copy of
+    // each finished eye image; the back buffer holds whichever eye rendered last.
     bool is_native_stereo() const { return m_native_stereo; }
     void request_native_stereo(bool enable) { m_native_stereo_requested = enable; }
-    // Native frames whose right half has no fresh image (e.g. a view without a right-eye camera) show the left eye in both.
+    // Frames without both eye images (loading screens, fullscreen menus) show the back buffer to both eyes.
     void set_native_mono_frame(bool mono) { m_native_mono_frame = mono; }
     bool is_native_mono_frame() const { return m_native_mono_frame; }
-    bool submits_every_frame() const { return is_using_async_aer() || m_native_stereo; }
-    // Full-frame native stereo: each eye renders the whole back buffer in turn and the game hands over a copy of
-    // each finished eye image; the back buffer itself holds whichever eye rendered last.
-    void set_native_full_frame(bool full_frame) { m_native_full_frame = full_frame; }
-    bool is_native_full_frame() const { return m_native_full_frame; }
     // The texture stays in PIXEL_SHADER_RESOURCE state between frames.
     void set_native_eye_source(uint32_t eye, ID3D12Resource* texture) {
         std::scoped_lock _{ m_eye_source_mutex };
@@ -227,8 +215,6 @@ public:
         return std::exchange(m_dump_path, {});
     }
 
-    void set_async_aer(bool enable) { m_use_async_aer->value() = enable; }
-
     bool is_gui_enabled() const {
         return true;
     }
@@ -242,7 +228,6 @@ public:
     void set_gui_rotation_offset(const glm::quat& offset);
     void recenter_gui(const glm::quat& from);
 
-    Vector4f get_current_offset();
     Matrix4x4f get_current_eye_transform(bool flip = false);
     Matrix4x4f get_eye_transform(VRRuntime::Eye eye);
     Matrix4x4f get_current_projection_matrix(bool flip = false);
@@ -653,11 +638,9 @@ public:
     std::atomic<float> m_comfort_fade{0.0f};
     int m_render_frame_count{0};
     int m_presenter_frame_count{0};
-    bool m_skip_next_present{false};
     std::atomic<bool> m_native_stereo{false};
     std::atomic<bool> m_native_stereo_requested{false};
     std::atomic<bool> m_native_mono_frame{false};
-    std::atomic<bool> m_native_full_frame{false};
     std::atomic<bool> m_native_hud_panel{false};
     std::atomic<float> m_native_hud_panel_width{2.0f};
     std::atomic<float> m_native_hud_panel_distance{2.0f};
@@ -670,9 +653,6 @@ public:
     std::wstring m_dump_path{};
 
 private:
-    int m_last_frame_count{-1};
-    int m_left_eye_frame_count{0};
-    int m_right_eye_frame_count{0};
 
     bool m_submitted{false};
     //bool m_disable_sharpening{true};
@@ -694,8 +674,6 @@ private:
     bool m_depth_aided_reprojection{false};
 
     // == 1 or == 0
-    uint8_t m_left_eye_interval{0};
-    uint8_t m_right_eye_interval{1};
 
     static std::string actions_json;
     static std::string binding_rift_json;
@@ -723,7 +701,6 @@ private:
 
     const ModKey::Ptr m_recenter_view_key{ ModKey::create(generate_name("RecenterViewKey")) };
     const ModToggle::Ptr m_decoupled_pitch{ ModToggle::create(generate_name("DecoupledPitch"), false) };
-    const ModToggle::Ptr m_use_async_aer{ ModToggle::create(generate_name("AsyncAER"), true) };
     const ModToggle::Ptr m_use_custom_view_distance{ ModToggle::create(generate_name("UseCustomViewDistance"), false) };
     const ModToggle::Ptr m_hmd_oriented_audio{ ModToggle::create(generate_name("HMDOrientedAudio"), true) };
     const ModSlider::Ptr m_view_distance{ ModSlider::create(generate_name("CustomViewDistance"), 10.0f, 3000.0f, 500.0f) };
@@ -765,7 +742,6 @@ private:
     ValueList m_options{
         *m_recenter_view_key,
 //        *m_decoupled_pitch,
-        *m_use_async_aer,
 //        *m_use_custom_view_distance,
 //        *m_hmd_oriented_audio,
 //        *m_view_distance,
@@ -799,5 +775,4 @@ private:
     friend class vrmod::D3D12Component;
     friend class vrmod::OverlayComponent;
 public:
-    VRRuntime::Eye get_current_render_eye() const;
 };

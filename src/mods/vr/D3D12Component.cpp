@@ -20,292 +20,92 @@ typedef HRESULT(WINAPI* PFN_D3D12_GET_DEBUG_INTERFACE)(REFIID, void**);
 
 namespace vrmod {
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
-    if (m_openvr.left_eye_tex[0].texture == nullptr || m_force_reset) {
+    if (!m_initialized || m_force_reset) {
         setup();
     }
 
     auto& hook = g_framework->get_d3d12_hook();
-    
-    // get device
-    auto device = hook->get_device();
-
-    // get command queue
-    auto command_queue = hook->get_command_queue();
-
-    // get swapchain
     auto swapchain = hook->get_swap_chain();
 
-    // get back buffer
     ComPtr<ID3D12Resource> backbuffer{};
-
     const auto backbuffer_index = swapchain->GetCurrentBackBufferIndex();
-
-    if (FAILED(swapchain->GetBuffer(backbuffer_index, IID_PPV_ARGS(&backbuffer)))) {
+    if (FAILED(swapchain->GetBuffer(backbuffer_index, IID_PPV_ARGS(&backbuffer))) || backbuffer == nullptr) {
         spdlog::error("[VR] Failed to get back buffer");
         return vr::VRCompositorError_None;
     }
 
-    if (backbuffer == nullptr) {
-        spdlog::error("[VR] Failed to get back buffer.");
+    if (vr->is_hmd_active()) {
+        prepare_comfort_textures(vr);
+    }
+
+    auto runtime = vr->get_runtime();
+    if (!runtime->is_openxr()) {
+        m_prev_backbuffer = backbuffer;
         return vr::VRCompositorError_None;
     }
 
-    if (vr->is_hmd_active()) {
-        draw_comfort_vignette(vr, backbuffer.Get());
-    }
-
-    const bool native_stereo = vr->is_native_stereo() && vr->get_runtime()->is_openxr();
-
-    if (!m_backbuffer_is_8bit) {
-        auto command_list = m_backbuffer_copy.commands.cmd_list.Get();
-        m_backbuffer_copy.commands.wait(INFINITE);
-
-        // Copy current backbuffer into our copy so we can use it as an SRV.
-        m_backbuffer_copy.commands.copy(backbuffer.Get(), m_backbuffer_copy.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT);
-
-        // Convert the backbuffer to 8-bit.
-        render_srv_to_rtv(command_list, m_backbuffer_copy, m_converted_eye_tex, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-        m_backbuffer_copy.commands.execute();
-    }
-
-    auto eye_texture = m_backbuffer_is_8bit ? backbuffer : m_converted_eye_tex.texture;
-
-    auto runtime = vr->get_runtime();
-    bool is_left_eye_frame = vr->m_presenter_frame_count % 2 == vr->m_left_eye_interval;
-    bool is_right_eye_frame = !is_left_eye_frame;
-    
-    if (runtime->is_openxr() && runtime->ready() && vr->m_openxr->frame_began) {
-        if (is_right_eye_frame || native_stereo) {
-            auto fw_rt = g_framework->get_rendertarget_d3d12();
-
-            if (fw_rt && g_framework->is_drawing_ui()) {
-                m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, fw_rt.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            }
+    if (runtime->ready() && vr->m_openxr->frame_began) {
+        auto fw_rt = g_framework->get_rendertarget_d3d12();
+        if (fw_rt && g_framework->is_drawing_ui()) {
+            m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, fw_rt.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
     }
 
-    if (native_stereo) {
-        dump_backbuffer(vr, backbuffer.Get());
-        if (vr->m_openxr->ready()) {
-            copy_native_stereo_eyes(vr, backbuffer.Get());
-        }
-    } else if (is_left_eye_frame) {
-        // If m_frame_count is even, we're rendering the left eye.
-        // OpenXR texture
-        if (runtime->is_openxr() && vr->m_openxr->ready()) {
-#ifdef OPENXR_FRAME_CROP_COPY
-            D3D12_BOX src_box{};
-            src_box.left = 0;
-            src_box.right = m_backbuffer_size[0];
-            src_box.top = 0;
-            src_box.bottom = m_backbuffer_size[1];
-            src_box.front = 0;
-            src_box.back = 1;
-            m_openxr.copy(0, eye_texture.Get(), D3D12_RESOURCE_STATE_PRESENT, &src_box);
-#else
-            m_openxr.copy(0, eye_texture.Get());
-#endif
-        }
+    dump_backbuffer(vr, backbuffer.Get());
+    if (vr->m_openxr->ready()) {
+        copy_native_stereo_eyes(vr, backbuffer.Get());
+    }
 
-        // OpenVR texture
-        // Copy the back buffer to the left eye texture (m_left_eye_tex0 holds the intermediate frame).
-        if (runtime->is_openvr()) {
-            m_openvr.copy_left(eye_texture.Get());
+    if (runtime->ready() && runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::VERY_LATE) {
+        runtime->synchronize_frame(vr->m_presenter_frame_count);
 
-            vr::D3D12TextureData_t left_tex {
-                m_openvr.get_left().texture.Get(),
-                command_queue,
-                0
-            };
-
-            vr::VRTextureWithPose_t left_eye{};
-            left_eye.handle = (void*)&left_tex;
-            left_eye.eType = vr::TextureType_DirectX12;
-            left_eye.eColorSpace = vr::ColorSpace_Auto;
-            left_eye.mDeviceToAbsoluteTracking = GlobalPool::get_openvr_pose(vr->m_presenter_frame_count);
-
-            const auto left_bounds = vr::VRTextureBounds_t{runtime->view_bounds[0][0], runtime->view_bounds[0][2],
-                                                           runtime->view_bounds[0][1], runtime->view_bounds[0][3]};
-            auto e = vr::VRCompositor()->Submit(vr::Eye_Left, (vr::Texture_t*)&left_eye, &left_bounds, vr::Submit_TextureWithPose);
-
-            if (e != vr::VRCompositorError_None) {
-                spdlog::error("[VR] VRCompositor failed to submit left eye: {}", (int)e);
-                return e;
-            }
-
-            if (vr->is_using_async_aer()) {
-                vr::D3D12TextureData_t right_tex {
-                    m_openvr.get_right(true).texture.Get(),
-                    command_queue,
-                    0
-                };
-
-                vr::VRTextureWithPose_t right_eye{};
-                right_eye.handle = (void*)&right_tex;
-                right_eye.eType = vr::TextureType_DirectX12;
-                right_eye.eColorSpace = vr::ColorSpace_Auto;
-                right_eye.mDeviceToAbsoluteTracking = GlobalPool::get_openvr_pose(vr->m_presenter_frame_count-1);
-
-                const auto right_bounds = vr::VRTextureBounds_t{runtime->view_bounds[1][0], runtime->view_bounds[1][2],
-                                                                 runtime->view_bounds[1][1], runtime->view_bounds[1][3]};
-                e = vr::VRCompositor()->Submit(vr::Eye_Right, (vr::Texture_t*)&right_eye, &right_bounds, vr::Submit_TextureWithPose);
-                if (e != vr::VRCompositorError_None) {
-                    spdlog::error("[VR] VRCompositor failed to submit right eye (resubmit): {}", (int)e);
-                    return e;
-                }
-                vr->m_submitted = true;
-            }
-        }
-    } else {
-        // OpenXR texture
-        if (runtime->is_openxr() && vr->m_openxr->ready()) {
-#ifdef OPENXR_FRAME_CROP_COPY
-                D3D12_BOX src_box{};
-                src_box.left = 0;
-                src_box.right = m_backbuffer_size[0];
-                src_box.top = 0;
-                src_box.bottom = m_backbuffer_size[1];
-                src_box.front = 0;
-                src_box.back = 1;
-                m_openxr.copy(1, eye_texture.Get(), D3D12_RESOURCE_STATE_PRESENT, &src_box);
-#else
-                m_openxr.copy(1, eye_texture.Get());
-#endif
-        }
-
-        // OpenVR texture
-        // Copy the back buffer to the right eye texture.
-        if (runtime->is_openvr()) {
-            if (vr->is_using_async_aer()) {
-                vr::D3D12TextureData_t left_tex {
-                    m_openvr.get_left().texture.Get(),
-                    command_queue,
-                    0
-                };
-
-                vr::VRTextureWithPose_t left_eye{};
-                left_eye.handle = (void*)&left_tex;
-                left_eye.eType = vr::TextureType_DirectX12;
-                left_eye.eColorSpace = vr::ColorSpace_Auto;
-                left_eye.mDeviceToAbsoluteTracking = GlobalPool::get_openvr_pose(vr->m_presenter_frame_count - 1);
-
-                const auto left_bounds = vr::VRTextureBounds_t{runtime->view_bounds[0][0], runtime->view_bounds[0][2],
-                                                               runtime->view_bounds[0][1], runtime->view_bounds[0][3]};
-                auto e = vr::VRCompositor()->Submit(vr::Eye_Left, &left_eye, &left_bounds, vr::Submit_TextureWithPose); /*, vr::Submit_Default);*/
-
-                if (e != vr::VRCompositorError_None) {
-                    spdlog::error("[VR] VRCompositor failed to submit left eye (resubmit): {}", (int)e);
-                    return e;
-                }
-            }
-            m_openvr.copy_right(eye_texture.Get());
-
-            vr::D3D12TextureData_t right_tex {
-                m_openvr.get_right().texture.Get(),
-                command_queue,
-                0
-            };
-
-            vr::VRTextureWithPose_t right_eye{};
-            right_eye.handle = (void*)&right_tex;
-            right_eye.eType = vr::TextureType_DirectX12;
-            right_eye.eColorSpace = vr::ColorSpace_Auto;
-            right_eye.mDeviceToAbsoluteTracking = GlobalPool::get_openvr_pose(vr->m_presenter_frame_count);
-
-            const auto right_bounds = vr::VRTextureBounds_t{runtime->view_bounds[1][0], runtime->view_bounds[1][2],
-                                                             runtime->view_bounds[1][1], runtime->view_bounds[1][3]};
-            auto e = vr::VRCompositor()->Submit(vr::Eye_Right, (vr::Texture_t*)&right_eye, &right_bounds, vr::Submit_TextureWithPose);
-
-            if (e != vr::VRCompositorError_None) {
-                spdlog::error("[VR] VRCompositor failed to submit right eye: {}", (int)e);
-                return e;
-            }
-            vr->m_submitted = true;
-
-            ++m_openvr.texture_counter;
+        if (!runtime->got_first_poses) {
+            runtime->update_poses(vr->m_presenter_frame_count + 1);
         }
     }
 
-    vr::EVRCompositorError e = vr::EVRCompositorError::VRCompositorError_None;
+    if (vr->m_openxr->ready()) {
+        if (runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::VERY_LATE || !vr->m_openxr->frame_began) {
+            vr->m_openxr->begin_frame(vr->m_presenter_frame_count);
+        }
 
-    if (is_right_eye_frame || vr->submits_every_frame()) {
-        ////////////////////////////////////////////////////////////////////////////////
-        // OpenXR start ////////////////////////////////////////////////////////////////
-        ////////////////////////////////////////////////////////////////////////////////
-        if (runtime->ready() && runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::VERY_LATE) {
-            runtime->synchronize_frame(vr->m_presenter_frame_count);
+        std::vector<XrCompositionLayerBaseHeader*> quad_layers{};
+        auto& openxr_overlay = vr->get_overlay_component().get_openxr();
 
-            if (!runtime->got_first_poses) {
-                runtime->update_poses(vr->m_presenter_frame_count + 1);
+        if (m_native_hud_ready && !ModSettings::showFlatScreenDisplay() && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI)) {
+            if (const auto hud_quad = openxr_overlay.generate_game_ui_quad()) {
+                quad_layers.push_back((XrCompositionLayerBaseHeader*)&hud_quad->get());
             }
         }
 
-        if (runtime->is_openxr() && vr->m_openxr->ready()) {
-            if (runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::VERY_LATE || !vr->m_openxr->frame_began) {
-                vr->m_openxr->begin_frame(vr->m_presenter_frame_count);
-            }
-
-            std::vector<XrCompositionLayerBaseHeader*> quad_layers{};
-
-            auto& openxr_overlay = vr->get_overlay_component().get_openxr();
-
-            if (m_native_hud_ready && vr->is_native_stereo() && !ModSettings::showFlatScreenDisplay() &&
-                m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI)) {
-                if (const auto hud_quad = openxr_overlay.generate_game_ui_quad()) {
-                    quad_layers.push_back((XrCompositionLayerBaseHeader*)&hud_quad->get());
-                }
-            }
-
-            if (m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI)) {
-                const auto framework_quad = openxr_overlay.generate_framework_ui_quad();
-                if (framework_quad) {
-                    quad_layers.push_back((XrCompositionLayerBaseHeader*)&framework_quad->get());
-                }
-            }
-
-            auto result = vr->m_openxr->end_frame(quad_layers, vr->m_presenter_frame_count);
-
-            if (result == XR_ERROR_LAYER_INVALID) {
-                spdlog::info("[VR] Attempting to correct invalid layer");
-
-                m_openxr.wait_for_all_copies();
-
-                spdlog::info("[VR] Calling xrEndFrame again");
-                result = vr->m_openxr->end_frame(quad_layers, vr->m_presenter_frame_count);
-            }
-
-            vr->m_openxr->needs_pose_update = true;
-            vr->m_submitted = result == XR_SUCCESS;
-        }
-
-        ////////////////////////////////////////////////////////////////////////////////
-        // OpenVR start ////////////////////////////////////////////////////////////////
-        ////////////////////////////////////////////////////////////////////////////////
-        if (runtime->is_openvr()) {
-            if (runtime->needs_pose_update) {
-                vr->m_submitted = false;
-                spdlog::info("[VR] Runtime needed pose update inside present (frame {})", vr->m_engine_frame_count);
-                return vr::VRCompositorError_None;
-            }
-
-            //++m_openvr.texture_counter;
-        }
-
-        // Allows the desktop window to be recorded.
-        if (vr->m_desktop_fix->value() && (is_right_eye_frame || native_stereo)) {
-            if (runtime->ready() && m_prev_backbuffer != backbuffer && m_prev_backbuffer != nullptr) {
-                auto& copier = m_generic_copiers[vr->m_presenter_frame_count % m_generic_copiers.size()];
-                copier.wait(INFINITE);
-                copier.copy(m_prev_backbuffer.Get(), backbuffer.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT);
-                copier.execute();
+        if (m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI)) {
+            if (const auto framework_quad = openxr_overlay.generate_framework_ui_quad()) {
+                quad_layers.push_back((XrCompositionLayerBaseHeader*)&framework_quad->get());
             }
         }
+
+        auto result = vr->m_openxr->end_frame(quad_layers, vr->m_presenter_frame_count);
+        if (result == XR_ERROR_LAYER_INVALID) {
+            spdlog::info("[VR] Attempting to correct invalid layer");
+            m_openxr.wait_for_all_copies();
+            spdlog::info("[VR] Calling xrEndFrame again");
+            result = vr->m_openxr->end_frame(quad_layers, vr->m_presenter_frame_count);
+        }
+
+        vr->m_openxr->needs_pose_update = true;
+        vr->m_submitted = result == XR_SUCCESS;
+    }
+
+    // Allows the desktop window to be recorded.
+    if (vr->m_desktop_fix->value() && runtime->ready() && m_prev_backbuffer != backbuffer && m_prev_backbuffer != nullptr) {
+        auto& copier = m_generic_copiers[vr->m_presenter_frame_count % m_generic_copiers.size()];
+        copier.wait(INFINITE);
+        copier.copy(m_prev_backbuffer.Get(), backbuffer.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT);
+        copier.execute();
     }
 
     m_prev_backbuffer = backbuffer;
-
-    return e;
+    return vr::VRCompositorError_None;
 }
 
 void D3D12Component::on_post_present(VR* vr) {
@@ -320,24 +120,13 @@ void D3D12Component::on_post_present(VR* vr) {
 void D3D12Component::on_reset(VR* vr) {
     auto runtime = vr->get_runtime();
 
-    for (auto& ctx : m_openvr.left_eye_tex) {
-        ctx.reset();
-    }
-
-    for (auto& ctx : m_openvr.right_eye_tex) {
-        ctx.reset();
-    }
-
     for (auto& copier : m_generic_copiers) {
         copier.reset();
     }
     
     m_prev_backbuffer.Reset();
-    m_backbuffer_copy.reset();
-    m_converted_eye_tex.reset();
     m_graphics_memory.reset();
-    m_vignette_batch.reset();
-    m_vignette_format = DXGI_FORMAT_UNKNOWN;
+    m_initialized = false;
 
     if (runtime->is_openxr() && runtime->loaded) {
         if (m_openxr.last_resolution[0] != vr->get_hmd_width() || m_openxr.last_resolution[1] != vr->get_hmd_height()) {
@@ -349,22 +138,18 @@ void D3D12Component::on_reset(VR* vr) {
         //vr->m_openxr.begin_frame();
         //vr->m_openxr.end_frame();
     }
-
-    m_openvr.texture_counter = 0;
 }
 
 void D3D12Component::setup() {
     spdlog::info("[VR] Setting up d3d12 textures...");
-    
+
     m_prev_backbuffer.Reset();
 
     auto& hook = g_framework->get_d3d12_hook();
-
     auto device = hook->get_device();
     auto swapchain = hook->get_swap_chain();
 
     ComPtr<ID3D12Resource> backbuffer{};
-
     if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer)))) {
         spdlog::error("[VR] Failed to get back buffer.");
         return;
@@ -374,96 +159,16 @@ void D3D12Component::setup() {
         m_graphics_memory = std::make_unique<DirectX::DX12::GraphicsMemory>(device);
     }
 
-    const auto backbuffer_desc = backbuffer->GetDesc();
-
-    // DXGI_FORMAT_R11G11B10_FLOAT
-    m_backbuffer_is_8bit = backbuffer_desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM;
-
-    auto backbuffer_srv_desc = backbuffer_desc;
-    backbuffer_srv_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-    backbuffer_srv_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
-
-    D3D12_HEAP_PROPERTIES heap_props{};
-    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
-    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-
-    // Create copy of backbuffer to use as SRV to convert from HDR to 8bit
-    if (!m_backbuffer_is_8bit) {
-            ComPtr<ID3D12Resource> backbuffer_copy{};
-            if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &backbuffer_srv_desc, D3D12_RESOURCE_STATE_PRESENT, nullptr,
-                                                       IID_PPV_ARGS(backbuffer_copy.GetAddressOf()))))
-            {
-                spdlog::error("[VR] Failed to create backbuffer copy.");
-                return;
-            }
-
-        if (!m_backbuffer_copy.setup(device, backbuffer_copy.Get(), std::nullopt, std::nullopt)) {
-                spdlog::error("[VR] Error setting up backbuffer copy texture RTV/SRV.");
-            }
-    }
-
-    auto rt_desc = backbuffer_desc;
-
-    // rt_desc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
-    rt_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    rt_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-    rt_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
-
-    spdlog::info("[VR] D3D12 Backbuffer width: {}, height: {}", backbuffer_desc.Width, backbuffer_desc.Height);
-
-    // Create converted eye texture
-    if (!m_backbuffer_is_8bit) {
-        ComPtr<ID3D12Resource> eye_tex{};
-        if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &rt_desc, D3D12_RESOURCE_STATE_PRESENT, nullptr,
-                IID_PPV_ARGS(eye_tex.GetAddressOf())))) {
-            spdlog::error("[VR] Failed to create converted eye texture.");
-            return;
-        }
-
-        if (!m_converted_eye_tex.setup(device, eye_tex.Get(), std::nullopt, std::nullopt)) {
-            spdlog::error("[VR] Error setting up converted eye texture RTV/SRV.");
-        }
-    }
-
-    for (auto& ctx : m_openvr.left_eye_tex) {
-        ComPtr<ID3D12Resource> left_eye_tex{};
-        if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &rt_desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr,
-                IID_PPV_ARGS(left_eye_tex.GetAddressOf())))) {
-            spdlog::error("[VR] Failed to create left eye texture.");
-            return;
-        }
-
-        left_eye_tex->SetName(L"OpenVR Left Eye Texture");
-        if (!ctx.setup(device, left_eye_tex.Get(), std::nullopt, std::nullopt)) {
-            spdlog::error("[VR] Error setting up left eye texture RTV/SRV.");
-        }
-    }
- 
-    for (auto& ctx : m_openvr.right_eye_tex) {
-        ComPtr<ID3D12Resource> right_eye_tex{};
-        if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &rt_desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr,
-                IID_PPV_ARGS(right_eye_tex.GetAddressOf())))) {
-            spdlog::error("[VR] Failed to create right eye texture.");
-            return;
-        }
-
-        right_eye_tex->SetName(L"OpenVR Right Eye Texture");
-        if (!ctx.setup(device, right_eye_tex.Get(), std::nullopt, std::nullopt)) {
-            spdlog::error("[VR] Error setting up right eye texture RTV/SRV.");
-        }
-    }
-
     for (auto& copier : m_generic_copiers) {
         copier.setup();
     }
 
-    setup_sprite_batch_pso(rt_desc.Format);
+    const auto backbuffer_desc = backbuffer->GetDesc();
+    m_backbuffer_size[0] = (uint32_t)backbuffer_desc.Width;
+    m_backbuffer_size[1] = backbuffer_desc.Height;
+    spdlog::info("[VR] D3D12 Backbuffer width: {}, height: {}", backbuffer_desc.Width, backbuffer_desc.Height);
 
-    m_backbuffer_size[0] = rt_desc.Width;
-    m_backbuffer_size[1] = rt_desc.Height;
-
-    spdlog::info("[VR] d3d12 textures have been setup");
+    m_initialized = true;
     m_force_reset = false;
 }
 
@@ -517,7 +222,6 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     }
 
     const auto desc = backbuffer->GetDesc();
-    const auto half_width = (LONG)(desc.Width / 2);
     const bool mono = vr->is_native_mono_frame();
 
     const auto eye_format = m_native_eye[0].texture->GetDesc().Format;
@@ -538,11 +242,9 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     commands.wait(INFINITE);
     commands.copy(backbuffer, m_native_source.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT);
 
-    // Full frame: each eye's own captured image, or the whole back buffer for both eyes when an eye has none.
-    // Side by side: each half of the buffer is stretched over its eye's whole image.
-    const bool full_frame = vr->is_native_full_frame();
+    // Each eye shows its own captured image, or the whole back buffer when it has none.
     std::array<bool, 2> captured{};
-    if (full_frame && !mono) {
+    if (!mono) {
         auto device = g_framework->get_d3d12_hook()->get_device();
         for (uint32_t eye = 0; eye < 2; ++eye) {
             auto source = vr->get_native_eye_source(eye);
@@ -574,7 +276,7 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     }
 
     bool ui_ready = false;
-    if (full_frame && !mono && (captured[0] || captured[1])) {
+    if (!mono && (captured[0] || captured[1])) {
         if (auto ui = vr->get_native_ui_source(); ui != nullptr) {
             if (m_native_ui_resource != ui.Get() || m_native_ui.texture == nullptr) {
                 m_native_ui.reset();
@@ -597,9 +299,7 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     for (uint32_t eye = 0; eye < 2; ++eye) {
         auto& dst = m_native_eye[eye];
         const auto dst_desc = dst.texture->GetDesc();
-        const bool whole = full_frame && (mono || !captured[eye]);
-        const LONG left = whole ? 0 : (mono ? 0 : (LONG)eye) * half_width;
-        const RECT source{ left, 0, whole ? (LONG)desc.Width : left + half_width, (LONG)desc.Height };
+        const RECT source{ 0, 0, (LONG)desc.Width, (LONG)desc.Height };
 
         D3D12_RESOURCE_BARRIER barriers[]{
             CD3DX12_RESOURCE_BARRIER::Transition(dst.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
@@ -640,7 +340,7 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         // Comfort vignette and fade, drawn here because the eyes no longer show the back buffer.
         const float vignette = vr->get_comfort_vignette();
         const float fade = vr->get_comfort_fade();
-        const bool comfort = full_frame && m_vignette_srv_heap != nullptr && (vignette > 0.01f || fade > 0.01f);
+        const bool comfort = m_vignette_srv_heap != nullptr && (vignette > 0.01f || fade > 0.01f);
 
         // The UI layer, shifted toward the nose in each eye so the HUD sits a couple of metres away instead of at infinity.
         if (ui_ready && captured[eye] && !vr->is_native_hud_panel()) {
@@ -761,17 +461,16 @@ void D3D12Component::dump_backbuffer(VR* vr, ID3D12Resource* backbuffer) {
     m_eye_dump_path = path;
 }
 
-void D3D12Component::draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer) {
+void D3D12Component::prepare_comfort_textures(VR* vr) {
     const float strength = vr->get_comfort_vignette();
     const float fade = vr->get_comfort_fade();
-    if ((strength <= 0.01f && fade <= 0.01f) || backbuffer == nullptr) {
+    if (strength <= 0.01f && fade <= 0.01f) {
         return;
     }
 
     auto& hook = g_framework->get_d3d12_hook();
     auto device = hook->get_device();
     auto command_queue = hook->get_command_queue();
-    const auto desc = backbuffer->GetDesc();
 
     if (m_vignette_texture == nullptr) {
         constexpr UINT kSize = 256;
@@ -817,158 +516,9 @@ void D3D12Component::draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer) {
         m_vignette_srv_heap = std::make_unique<DirectX::DescriptorHeap>(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 2);
         device->CreateShaderResourceView(m_vignette_texture.Get(), nullptr, m_vignette_srv_heap->GetCpuHandle(0));
         device->CreateShaderResourceView(m_fade_texture.Get(), nullptr, m_vignette_srv_heap->GetCpuHandle(1));
-        m_vignette_rtv_heap = std::make_unique<DirectX::DescriptorHeap>(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 1);
-        m_vignette_commands.setup(L"Comfort vignette");
     }
-
-    // Full-frame native stereo draws the vignette and fade over each eye's image instead.
-    if (vr->is_native_stereo() && vr->is_native_full_frame()) {
-        return;
-    }
-
-    if (m_vignette_batch == nullptr || m_vignette_format != desc.Format) {
-        DirectX::ResourceUploadBatch upload{ device };
-        upload.Begin();
-        DirectX::RenderTargetState output_state{ desc.Format, DXGI_FORMAT_UNKNOWN };
-        DirectX::SpriteBatchPipelineStateDescription pd{ output_state };
-        m_vignette_batch = std::make_unique<DirectX::DX12::SpriteBatch>(device, upload, pd);
-        upload.End(command_queue).wait();
-        m_vignette_format = desc.Format;
-    }
-
-    D3D12_RENDER_TARGET_VIEW_DESC rtv_desc{};
-    rtv_desc.Format = desc.Format;
-    rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    const auto rtv = m_vignette_rtv_heap->GetCpuHandle(0);
-    device->CreateRenderTargetView(backbuffer, &rtv_desc, rtv);
-
-    m_vignette_commands.wait(INFINITE);
-    auto command_list = m_vignette_commands.cmd_list.Get();
-
-    const auto to_rt = CD3DX12_RESOURCE_BARRIER::Transition(backbuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    command_list->ResourceBarrier(1, &to_rt);
-    command_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-
-    const auto width = (float)desc.Width;
-    const auto height = (float)desc.Height;
-    D3D12_VIEWPORT viewport{ 0.0f, 0.0f, width, height, D3D12_MIN_DEPTH, D3D12_MAX_DEPTH };
-    D3D12_RECT scissor{ 0, 0, (LONG)desc.Width, (LONG)desc.Height };
-    command_list->RSSetViewports(1, &viewport);
-    command_list->RSSetScissorRects(1, &scissor);
-
-    ID3D12DescriptorHeap* heaps[]{ m_vignette_srv_heap->Heap() };
-    command_list->SetDescriptorHeaps(1, heaps);
-
-    // Stronger vignettes shrink the clear area; weak ones also fade in.
-    const float scale = 2.0f - std::clamp(strength, 0.0f, 1.0f);
-    const float alpha = std::clamp(strength / 0.3f, 0.0f, 1.0f);
-    const int eye_count = vr->is_native_stereo() ? 2 : 1;
-    const float eye_width = width / (float)eye_count;
-
-    m_vignette_batch->SetViewport(viewport);
-    m_vignette_batch->Begin(command_list);
-    for (int eye = 0; eye < eye_count && strength > 0.01f; ++eye) {
-        const float x0 = eye_width * (float)eye;
-        const RECT dest{
-            (LONG)(x0 + eye_width * 0.5f * (1.0f - scale)), (LONG)(height * 0.5f * (1.0f - scale)),
-            (LONG)(x0 + eye_width * 0.5f * (1.0f + scale)), (LONG)(height * 0.5f * (1.0f + scale)),
-        };
-        m_vignette_batch->Draw(m_vignette_srv_heap->GetGpuHandle(0), DirectX::XMUINT2{ 256, 256 }, dest, DirectX::XMVECTORF32{ { { 1.0f, 1.0f, 1.0f, alpha } } });
-    }
-    if (fade > 0.01f) {
-        const RECT full{ 0, 0, (LONG)desc.Width, (LONG)desc.Height };
-        const float a = std::clamp(fade, 0.0f, 1.0f);
-        m_vignette_batch->Draw(m_vignette_srv_heap->GetGpuHandle(1), DirectX::XMUINT2{ 1, 1 }, full, DirectX::XMVECTORF32{ { { 1.0f, 1.0f, 1.0f, a } } });
-    }
-    m_vignette_batch->End();
-
-    const auto to_present = CD3DX12_RESOURCE_BARRIER::Transition(backbuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-    command_list->ResourceBarrier(1, &to_present);
-
-    m_vignette_commands.has_commands = true;
-    m_vignette_commands.execute();
 }
 
-void D3D12Component::setup_sprite_batch_pso(DXGI_FORMAT output_format) {
-    spdlog::info("[D3D12] Setting up sprite batch PSO");
-
-    auto& hook = g_framework->get_d3d12_hook();
-
-    auto device = hook->get_device();
-    auto command_queue = hook->get_command_queue();
-    auto swapchain = hook->get_swap_chain();
-
-    DirectX::ResourceUploadBatch upload{ device };
-    upload.Begin();
-
-    DirectX::RenderTargetState output_state{output_format, DXGI_FORMAT_UNKNOWN};
-    DirectX::SpriteBatchPipelineStateDescription pd{output_state};
-
-    m_sprite_batch = std::make_unique<DirectX::DX12::SpriteBatch>(device, upload, pd);
-
-    auto result = upload.End(command_queue);
-    result.wait();
-
-    spdlog::info("[D3D12] Sprite batch PSO setup complete");
-}
-
-void D3D12Component::render_srv_to_rtv(ID3D12GraphicsCommandList* command_list, const d3d12::TextureContext& src, const d3d12::TextureContext& dst, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state) {
-    const auto dst_desc = dst.texture->GetDesc();
-    const auto src_desc = src.texture->GetDesc();
-    
-    auto& batch = m_sprite_batch;
-
-    D3D12_VIEWPORT viewport{};
-    viewport.Width = (float)dst_desc.Width;
-    viewport.Height = (float)dst_desc.Height;
-    viewport.MinDepth = D3D12_MIN_DEPTH;
-    viewport.MaxDepth = D3D12_MAX_DEPTH;
-    
-    batch->SetViewport(viewport);
-
-    D3D12_RECT scissor_rect{};
-    scissor_rect.left = 0;
-    scissor_rect.top = 0;
-    scissor_rect.right = (LONG)dst_desc.Width;
-    scissor_rect.bottom = (LONG)dst_desc.Height;
-
-    // Transition dst to D3D12_RESOURCE_STATE_RENDER_TARGET
-    D3D12_RESOURCE_BARRIER barriers[]{
-        CD3DX12_RESOURCE_BARRIER::Transition(dst.texture.Get(), dst_state, D3D12_RESOURCE_STATE_RENDER_TARGET),
-        CD3DX12_RESOURCE_BARRIER::Transition(src.texture.Get(), src_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
-    };
-    command_list->ResourceBarrier(2, barriers);
-
-    command_list->ClearRenderTargetView(dst.get_rtv(), DirectX::Colors::Black, 0, nullptr);
-
-    // Set RTV to backbuffer
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv_heaps[] = { dst.get_rtv() };
-    command_list->OMSetRenderTargets(1, rtv_heaps, FALSE, nullptr);
-
-    // Setup viewport and scissor rects
-    command_list->RSSetViewports(1, &viewport);
-    command_list->RSSetScissorRects(1, &scissor_rect);
-
-    batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
-    RECT dest_rect{ 0, 0, (LONG)dst_desc.Width, (LONG)dst_desc.Height };
-
-    // Set descriptor heaps
-    ID3D12DescriptorHeap* game_heaps[] = { src.srv_heap->Heap() };
-    command_list->SetDescriptorHeaps(1, game_heaps);
-
-    batch->Draw(src.get_srv_gpu(), 
-        DirectX::XMUINT2{ (uint32_t)src_desc.Width, (uint32_t)src_desc.Height },
-        dest_rect,
-        DirectX::Colors::White);
-    //TODO add tonemap for SRGB
-    batch->End();
-
-    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barriers[0].Transition.StateAfter = dst_state;
-    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    barriers[1].Transition.StateAfter = src_state;
-    command_list->ResourceBarrier(2, barriers);
-}
 
 void D3D12Component::OpenXR::initialize(XrSessionCreateInfo& session_info) {
     std::scoped_lock _{this->mtx};

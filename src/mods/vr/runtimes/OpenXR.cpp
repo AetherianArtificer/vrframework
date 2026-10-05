@@ -1506,20 +1506,17 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     // in xrEndFrame, so we must only do it when shouldRender is true
     auto current_pipeline = &this->pipeline_state;
 
-    auto l_frame = frame % 2 == 0 ? frame : frame - 1;
-    auto r_frame = frame % 2 == 0 ? frame - 1 : frame;
-    const bool native_stereo = VR::get()->is_native_stereo();
 
     if (current_pipeline->frame_state.shouldRender == XR_TRUE) {
         projection_layer_views.resize(current_pipeline->stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
         if (!ModSettings::showFlatScreenDisplay()) {
             for (auto i = 0; i < projection_layer_views.size(); ++i) {
                 const auto& swapchain = this->swapchains[i];
-                int         actual_frame = i == 0 ? l_frame : r_frame;
-                auto& constants = GlobalPool::get_xr_constants(native_stereo ? frame : actual_frame);
+                // Both eyes come from the same frame, each with its own view.
+                auto& constants = GlobalPool::get_xr_constants(frame);
 
                 projection_layer_views[i].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
-                projection_layer_views[i].pose = native_stereo ? constants.view_pose[i] : constants.pose;
+                projection_layer_views[i].pose = constants.view_pose[i];
                 projection_layer_views[i].subImage.swapchain = swapchain.handle;
                 int32_t offset_x = 0, offset_y = 0, extent_x = 0, extent_y = 0;
                 int texture_area_width = swapchain.width;
@@ -1534,7 +1531,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
                     projection_layer_views[i].subImage.imageRect.extent = {swapchain.width, swapchain.height};
                     projection_layer_views[i].fov = current_pipeline->active_fov[i];
                 } else {
-                    projection_layer_views[i].fov = native_stereo ? constants.view_fov[i] : current_pipeline->stage_views[i].fov;
+                    projection_layer_views[i].fov = constants.view_fov[i];
                     projection_layer_views[i].subImage.imageRect.offset = {offset_x, offset_y};
                     projection_layer_views[i].subImage.imageRect.extent = {extent_x, extent_y};
                 }
