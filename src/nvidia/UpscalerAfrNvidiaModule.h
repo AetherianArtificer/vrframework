@@ -39,6 +39,8 @@ public:
 
     // Native stereo evaluates the upscaler once per view; the game marks the right eye's view on the evaluating thread.
     static void set_secondary_view(bool secondary) { t_secondary_view = secondary; }
+    // Set by the game around its hooked DLSS passes, to tell calls made inside them from calls made elsewhere.
+    static void set_in_upscaler_pass(bool in_pass) { t_in_upscaler_pass = in_pass; }
 
 private:
     void InstallHooks();
@@ -62,6 +64,16 @@ private:
 
     uint32_t m_afr_viewport_id{1024 + 1};
     static inline thread_local bool t_secondary_view{false};
+    static inline thread_local bool t_in_upscaler_pass{false};
+    // Per call type (tag, evaluate, constants): calls outside the DLSS passes, inside them, and routed to the right eye.
+    struct CallCounts {
+        std::atomic<uint32_t> outside{0};
+        std::atomic<uint32_t> inside{0};
+        std::atomic<uint32_t> right{0};
+    };
+    CallCounts m_call_counts[3]{};
+    std::atomic<uint32_t> m_count_frames{0};
+    void count_call(int kind);
 
     static bool use_second_viewport(uint32_t frame);
 

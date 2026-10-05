@@ -1,4 +1,5 @@
 #ifndef STREAMLINE_LEGACY
+#include <format>
 #include "UpscalerAfrNvidiaModule.h"
 #ifdef _DEBUG
 #include <nvidia/ShaderDebugOverlay.h>
@@ -202,10 +203,30 @@ bool UpscalerAfrNvidiaModule::use_second_viewport(uint32_t frame)
     return t_secondary_view;
 }
 
+void UpscalerAfrNvidiaModule::count_call(int kind)
+{
+    auto& counts = m_call_counts[kind];
+    (t_in_upscaler_pass ? counts.inside : counts.outside).fetch_add(1);
+    if (t_secondary_view) {
+        counts.right.fetch_add(1);
+    }
+    // Reported every 600 evaluations, about every few seconds with both eyes.
+    if (kind == 1 && m_count_frames.fetch_add(1) % 600 == 599) {
+        static constexpr const char* kNames[3]{ "tags", "evaluate", "constants" };
+        std::string summary;
+        for (int i = 0; i < 3; ++i) {
+            summary += std::format("{}{}: {} in DLSS passes ({} right eye), {} elsewhere", i ? "; " : "", kNames[i], m_call_counts[i].inside.exchange(0),
+                                   m_call_counts[i].right.exchange(0), m_call_counts[i].outside.exchange(0));
+        }
+        spdlog::info("[DLSS] Streamline calls: {}", summary);
+    }
+}
+
 sl::Result UpscalerAfrNvidiaModule::on_slSetTag(sl::ViewportHandle& viewport, const sl::ResourceTag* tags, uint32_t numTags, sl::CommandBuffer* cmdBuffer)
 {
     static auto            instance    = UpscalerAfrNvidiaModule::Get();
     static auto            original_fn = instance->m_set_tag_hook->get_original<decltype(UpscalerAfrNvidiaModule::on_slSetTag)>();
+    instance->count_call(0);
     static auto            vr          = VR::get();
     // spdlog::error("UNEXPECTED CALL TO slSetTag");
     // exit(1);
@@ -233,6 +254,9 @@ sl::Result UpscalerAfrNvidiaModule::on_slEvaluateFeature(sl::Feature feature, co
 {
     static auto instance    = UpscalerAfrNvidiaModule::Get();
     static auto original_fn = instance->m_evaluate_feature_hook->get_original<decltype(UpscalerAfrNvidiaModule::on_slEvaluateFeature)>();
+    if (supported_afr_feature(feature)) {
+        instance->count_call(1);
+    }
     static auto vr          = VR::get();
 //
 //    constexpr sl::BufferType kBufferTypeReactiveMaskHint = 36;
@@ -289,6 +313,7 @@ sl::Result UpscalerAfrNvidiaModule::on_slSetConstants(sl::Constants& values, con
 {
     static auto instance = UpscalerAfrNvidiaModule::Get();
     static auto original_fn = instance->m_set_constants_hook->get_original<decltype(UpscalerAfrNvidiaModule::on_slSetConstants)>();
+    instance->count_call(2);
 #ifdef MOTION_VECTOR_REPROJECTION
     instance->m_motion_vector_reprojection.m_mvecScale.x = values.mvecScale.x;
     instance->m_motion_vector_reprojection.m_mvecScale.y = values.mvecScale.y;
