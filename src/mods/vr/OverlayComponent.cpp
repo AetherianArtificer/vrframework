@@ -92,7 +92,7 @@ void OverlayComponent::update_input_mouse_emulation() {
     if (m_framework_intersect_state.intersecting && VR::get()->is_using_controllers()) {
         auto vr = VR::get();
         auto& io = ImGui::GetIO();
-        const auto is_initial_frame = vr->is_using_async_aer() || vr->m_engine_frame_count % 2 == vr->m_left_eye_interval;
+        const auto is_initial_frame = true;
 
         const auto x = m_framework_intersect_state.swapchain_intersection_point.x;
         const auto y = m_framework_intersect_state.swapchain_intersection_point.y;
@@ -239,7 +239,7 @@ void OverlayComponent::update_input_openvr() {
 
     auto vr = VR::get();
     auto& io = ImGui::GetIO();
-    const auto is_initial_frame = vr->is_using_async_aer() || vr->m_engine_frame_count % 2 == vr->m_left_eye_interval;
+    const auto is_initial_frame = true;
 
     // Restore the previous frame's input state
 //    memcpy(io.KeysDown, m_initial_imgui_input_state.KeysDown, sizeof(io.KeysDown));
@@ -781,6 +781,55 @@ void OverlayComponent::update_overlay_openvr() {
         vr::VROverlay()->ClearOverlayTexture(m_overlay_handle);
         vr::VROverlay()->HideOverlay(m_overlay_handle);
     }
+}
+
+std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::OpenXR::generate_game_ui_quad() {
+    auto& vr = VR::get();
+    const auto& swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI];
+    if (swapchain.handle == XR_NULL_HANDLE || swapchain.width == 0 || swapchain.height == 0) {
+        return std::nullopt;
+    }
+
+    // Head pose in the recentred standing space; the panel follows the head's yaw only once it is well off to the side.
+    const auto head = glm::mat4{vr->get_transform(0)};
+    const auto forward = -glm::vec3{head[2]};
+    const float head_yaw = std::atan2(-forward.x, -forward.z);
+    auto wrap = [](float a) {
+        while (a > glm::pi<float>()) a -= glm::two_pi<float>();
+        while (a < -glm::pi<float>()) a += glm::two_pi<float>();
+        return a;
+    };
+    if (!m_game_ui_placed) {
+        m_game_ui_yaw = head_yaw;
+        m_game_ui_placed = true;
+    }
+    const float kFollowAngle = glm::radians(20.0f);
+    const float off = wrap(head_yaw - m_game_ui_yaw);
+    if (std::abs(off) > kFollowAngle) {
+        // Ease back until the head is inside the dead zone again.
+        m_game_ui_yaw = wrap(m_game_ui_yaw + (off - std::copysign(kFollowAngle * 0.5f, off)) * 0.1f);
+    }
+
+    const float distance = vr->get_native_hud_panel_distance();
+    const float width = vr->get_native_hud_panel_width();
+    const float height = width * (float)swapchain.height / (float)swapchain.width;
+
+    auto panel = glm::rotate(glm::mat4{1.0f}, m_game_ui_yaw, glm::vec3{0.0f, 1.0f, 0.0f});
+    panel[3] = glm::vec4{glm::vec3{head[3]} + glm::vec3{panel * glm::vec4{0.0f, 0.0f, -distance, 0.0f}}, 1.0f};
+    panel = glm::inverse(vr->get_transform_offset()) * panel;
+
+    auto& layer = m_game_ui_layer;
+    layer = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+    layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    layer.space = vr->m_openxr->stage_space;
+    layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    layer.subImage.swapchain = swapchain.handle;
+    layer.subImage.imageRect.offset = {0, 0};
+    layer.subImage.imageRect.extent = {(int32_t)swapchain.width, (int32_t)swapchain.height};
+    layer.pose.orientation = runtimes::OpenXR::to_openxr(glm::quat_cast(panel));
+    layer.pose.position = runtimes::OpenXR::to_openxr(panel[3]);
+    layer.size = {width, height};
+    return layer;
 }
 
 std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::OpenXR::generate_framework_ui_quad() {

@@ -162,11 +162,57 @@ public:
 //    int32_t get_frame_count() const;
 //    int32_t get_game_frame_count() const;
 
-    bool is_using_async_aer() const {
-        // openVR has issues with 2 different poses at the same time for non steam native VR hmds like oculus
-        // for these exceptions need to implement viewport cropping and viewport reprojection
-        //TODO it looks like runtime does not fully support dx11 reprojeciton, I need to do it manually
-        return m_use_async_aer->value();
+    // Native stereo: both eyes render every engine frame, each over the whole frame, and the game hands over a copy of
+    // each finished eye image; the back buffer holds whichever eye rendered last.
+    bool is_native_stereo() const { return m_native_stereo; }
+    void request_native_stereo(bool enable) { m_native_stereo_requested = enable; }
+    // Frames without both eye images (loading screens, fullscreen menus) show the back buffer to both eyes.
+    void set_native_mono_frame(bool mono) { m_native_mono_frame = mono; }
+    bool is_native_mono_frame() const { return m_native_mono_frame; }
+    // The texture stays in PIXEL_SHADER_RESOURCE state between frames.
+    void set_native_eye_source(uint32_t eye, ID3D12Resource* texture) {
+        std::scoped_lock _{ m_eye_source_mutex };
+        m_native_eye_sources[eye & 1] = texture;
+        m_native_eye_source_frames[eye & 1] = m_engine_frame_count;
+    }
+    // The game's UI layer, drawn over both captured eye images; same state rules as the eye images.
+    void set_native_ui_source(ID3D12Resource* texture) {
+        std::scoped_lock _{ m_eye_source_mutex };
+        m_native_ui_source = texture;
+        m_native_ui_source_frame = m_engine_frame_count;
+    }
+    Microsoft::WRL::ComPtr<ID3D12Resource> get_native_ui_source() {
+        std::scoped_lock _{ m_eye_source_mutex };
+        if (m_engine_frame_count - m_native_ui_source_frame > 3) {
+            return nullptr;
+        }
+        return m_native_ui_source;
+    }
+    // Native stereo can show the game's HUD on a panel in the world instead of over each eye: width and distance in metres.
+    void set_native_hud_panel(bool enabled, float width, float distance) {
+        m_native_hud_panel = enabled;
+        m_native_hud_panel_width = width;
+        m_native_hud_panel_distance = distance;
+    }
+    bool is_native_hud_panel() const { return m_native_hud_panel; }
+    float get_native_hud_panel_width() const { return m_native_hud_panel_width; }
+    float get_native_hud_panel_distance() const { return m_native_hud_panel_distance; }
+    // Null when the eye has not been captured in the last few frames.
+    Microsoft::WRL::ComPtr<ID3D12Resource> get_native_eye_source(uint32_t eye) {
+        std::scoped_lock _{ m_eye_source_mutex };
+        if (m_engine_frame_count - m_native_eye_source_frames[eye & 1] > 3) {
+            return nullptr;
+        }
+        return m_native_eye_sources[eye & 1];
+    }
+    // The next presented back buffer is saved as a PNG to this path.
+    void request_backbuffer_dump(std::wstring path) {
+        std::scoped_lock _{ m_dump_mutex };
+        m_dump_path = std::move(path);
+    }
+    std::wstring take_backbuffer_dump_request() {
+        std::scoped_lock _{ m_dump_mutex };
+        return std::exchange(m_dump_path, {});
     }
 
     bool is_gui_enabled() const {
@@ -182,8 +228,8 @@ public:
     void set_gui_rotation_offset(const glm::quat& offset);
     void recenter_gui(const glm::quat& from);
 
-    Vector4f get_current_offset();
     Matrix4x4f get_current_eye_transform(bool flip = false);
+    Matrix4x4f get_eye_transform(VRRuntime::Eye eye);
     Matrix4x4f get_current_projection_matrix(bool flip = false);
 
     auto& get_controllers() const {
@@ -592,12 +638,21 @@ public:
     std::atomic<float> m_comfort_fade{0.0f};
     int m_render_frame_count{0};
     int m_presenter_frame_count{0};
-    bool m_skip_next_present{false};
+    std::atomic<bool> m_native_stereo{false};
+    std::atomic<bool> m_native_stereo_requested{false};
+    std::atomic<bool> m_native_mono_frame{false};
+    std::atomic<bool> m_native_hud_panel{false};
+    std::atomic<float> m_native_hud_panel_width{2.0f};
+    std::atomic<float> m_native_hud_panel_distance{2.0f};
+    std::mutex m_eye_source_mutex{};
+    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> m_native_eye_sources{};
+    std::array<int64_t, 2> m_native_eye_source_frames{ -100, -100 };
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_native_ui_source{};
+    int64_t m_native_ui_source_frame{ -100 };
+    std::mutex m_dump_mutex{};
+    std::wstring m_dump_path{};
 
 private:
-    int m_last_frame_count{-1};
-    int m_left_eye_frame_count{0};
-    int m_right_eye_frame_count{0};
 
     bool m_submitted{false};
     //bool m_disable_sharpening{true};
@@ -619,8 +674,6 @@ private:
     bool m_depth_aided_reprojection{false};
 
     // == 1 or == 0
-    uint8_t m_left_eye_interval{0};
-    uint8_t m_right_eye_interval{1};
 
     static std::string actions_json;
     static std::string binding_rift_json;
@@ -648,7 +701,6 @@ private:
 
     const ModKey::Ptr m_recenter_view_key{ ModKey::create(generate_name("RecenterViewKey")) };
     const ModToggle::Ptr m_decoupled_pitch{ ModToggle::create(generate_name("DecoupledPitch"), false) };
-    const ModToggle::Ptr m_use_async_aer{ ModToggle::create(generate_name("AsyncAER"), true) };
     const ModToggle::Ptr m_use_custom_view_distance{ ModToggle::create(generate_name("UseCustomViewDistance"), false) };
     const ModToggle::Ptr m_hmd_oriented_audio{ ModToggle::create(generate_name("HMDOrientedAudio"), true) };
     const ModSlider::Ptr m_view_distance{ ModSlider::create(generate_name("CustomViewDistance"), 10.0f, 3000.0f, 500.0f) };
@@ -690,7 +742,6 @@ private:
     ValueList m_options{
         *m_recenter_view_key,
 //        *m_decoupled_pitch,
-        *m_use_async_aer,
 //        *m_use_custom_view_distance,
 //        *m_hmd_oriented_audio,
 //        *m_view_distance,
@@ -724,5 +775,4 @@ private:
     friend class vrmod::D3D12Component;
     friend class vrmod::OverlayComponent;
 public:
-    VRRuntime::Eye get_current_render_eye() const;
 };

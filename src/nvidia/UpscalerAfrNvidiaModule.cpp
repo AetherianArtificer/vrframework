@@ -196,6 +196,12 @@ void UpscalerAfrNvidiaModule::ReprojectMotionVectors(const sl::FrameToken& frame
 #endif
 
 
+bool UpscalerAfrNvidiaModule::use_second_viewport(uint32_t frame)
+{
+    // The right eye's DLSS passes run with the secondary view flag set and keep their own history.
+    return t_secondary_view;
+}
+
 sl::Result UpscalerAfrNvidiaModule::on_slSetTag(sl::ViewportHandle& viewport, const sl::ResourceTag* tags, uint32_t numTags, sl::CommandBuffer* cmdBuffer)
 {
     static auto            instance    = UpscalerAfrNvidiaModule::Get();
@@ -203,7 +209,7 @@ sl::Result UpscalerAfrNvidiaModule::on_slSetTag(sl::ViewportHandle& viewport, co
     static auto            vr          = VR::get();
     // spdlog::error("UNEXPECTED CALL TO slSetTag");
     // exit(1);
-    if(vr->m_render_frame_count % 2 == 0 && instance->m_enabled->value()) {
+    if(use_second_viewport(vr->m_render_frame_count) && instance->m_enabled->value()) {
         sl::ViewportHandle afr_viewport_handle{instance->m_afr_viewport_id};
         return original_fn(afr_viewport_handle, tags, numTags, cmdBuffer);
     }
@@ -260,7 +266,7 @@ sl::Result UpscalerAfrNvidiaModule::on_slEvaluateFeature(sl::Feature feature, co
     }
 #endif
 
-    if(frame % 2 == 0 && supported_afr_feature(feature) && instance->m_enabled->value()) {
+    if(use_second_viewport(frame) && supported_afr_feature(feature) && instance->m_enabled->value()) {
         sl::ViewportHandle afr_viewport_handle{instance->m_afr_viewport_id};
         std::vector<sl::BaseStructure*> afr_inputs{};
         afr_inputs.resize(numInputs);
@@ -295,7 +301,7 @@ sl::Result UpscalerAfrNvidiaModule::on_slSetConstants(sl::Constants& values, con
 #endif
 
 
-    if(frame % 2 == 0 && instance->m_enabled->value()) {
+    if(use_second_viewport(frame) && instance->m_enabled->value()) {
         sl::ViewportHandle afr_viewport_handle{instance->m_afr_viewport_id};
         return original_fn(values, frame, afr_viewport_handle);
     }

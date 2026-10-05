@@ -15,6 +15,8 @@ namespace GlobalPool
         struct OpenXR {
             XrPosef pose{};
             XrFovf  fov{};
+            XrPosef view_pose[2]{};
+            XrFovf  view_fov[2]{};
         } openxr;
 
         struct OpenVR {
@@ -70,6 +72,14 @@ namespace GlobalPool
 
     inline const auto& get_openxr_fov(int frame) {
         return g_constants[frame % CONSTANTS_HISTORY_SIZE].openxr.fov;
+    }
+
+    inline void submit_openxr_view_pair(const XrView& left, const XrView& right, int frame) {
+        auto& xr = g_constants[frame % CONSTANTS_HISTORY_SIZE].openxr;
+        xr.view_pose[0] = left.pose;
+        xr.view_pose[1] = right.pose;
+        xr.view_fov[0] = left.fov;
+        xr.view_fov[1] = right.fov;
     }
 
     inline const auto& get_xr_constants(int frame) {
