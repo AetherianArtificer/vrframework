@@ -13,6 +13,7 @@
 #include <d3dcompiler.h>
 #include <../../../_deps/directxtk12-src/Inc/ScreenGrab.h>
 #include <utility/String.hpp>
+#include <ModSettings.h>
 #include <wincodec.h>
 
 typedef HRESULT(WINAPI* PFN_D3D12_GET_DEBUG_INTERFACE)(REFIID, void**);
@@ -248,6 +249,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             std::vector<XrCompositionLayerBaseHeader*> quad_layers{};
 
             auto& openxr_overlay = vr->get_overlay_component().get_openxr();
+
+            if (m_native_hud_ready && vr->is_native_stereo() && !ModSettings::showFlatScreenDisplay() &&
+                m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI)) {
+                if (const auto hud_quad = openxr_overlay.generate_game_ui_quad()) {
+                    quad_layers.push_back((XrCompositionLayerBaseHeader*)&hud_quad->get());
+                }
+            }
 
             if (m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI)) {
                 const auto framework_quad = openxr_overlay.generate_framework_ui_quad();
@@ -635,7 +643,7 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         const bool comfort = full_frame && m_vignette_srv_heap != nullptr && (vignette > 0.01f || fade > 0.01f);
 
         // The UI layer, shifted toward the nose in each eye so the HUD sits a couple of metres away instead of at infinity.
-        if (ui_ready && captured[eye]) {
+        if (ui_ready && captured[eye] && !vr->is_native_hud_panel()) {
             const auto ui_desc = m_native_ui.texture->GetDesc();
             const LONG shift = (LONG)(dest.right * 0.006f) * (eye == 0 ? 1 : -1);
             const RECT ui_dest{ dest.left + shift, dest.top, dest.right + shift, dest.bottom };
@@ -672,10 +680,56 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
         command_list->ResourceBarrier(2, barriers);
     }
+    m_native_hud_ready = false;
+    if (ui_ready && vr->is_native_hud_panel()) {
+        const auto& panel_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI];
+        auto& target = m_native_hud_target;
+        if (panel_swapchain.width > 0 && (target.texture == nullptr || target.texture->GetDesc().Width != (UINT64)panel_swapchain.width ||
+                                          target.texture->GetDesc().Height != (UINT)panel_swapchain.height)) {
+            auto device = g_framework->get_d3d12_hook()->get_device();
+            const CD3DX12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_DEFAULT };
+            auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, panel_swapchain.width, panel_swapchain.height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+            ComPtr<ID3D12Resource> texture{};
+            if (SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&texture)))) {
+                texture->SetName(L"Native stereo HUD panel");
+                if (!target.setup(device, texture.Get(), std::nullopt, std::nullopt, L"Native stereo HUD panel")) {
+                    target.reset();
+                }
+            }
+        }
+        if (target.texture != nullptr) {
+            const auto target_desc = target.texture->GetDesc();
+            const auto ui_desc = m_native_ui.texture->GetDesc();
+            const auto to_rt = CD3DX12_RESOURCE_BARRIER::Transition(target.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            command_list->ResourceBarrier(1, &to_rt);
+            const auto rtv = target.get_rtv();
+            const float clear[4]{ 0.0f, 0.0f, 0.0f, 0.0f };
+            command_list->ClearRenderTargetView(rtv, clear, 0, nullptr);
+            D3D12_VIEWPORT viewport{ 0.0f, 0.0f, (float)target_desc.Width, (float)target_desc.Height, D3D12_MIN_DEPTH, D3D12_MAX_DEPTH };
+            D3D12_RECT scissor{ 0, 0, (LONG)target_desc.Width, (LONG)target_desc.Height };
+            command_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+            command_list->RSSetViewports(1, &viewport);
+            command_list->RSSetScissorRects(1, &scissor);
+            ID3D12DescriptorHeap* ui_heaps[]{ m_native_ui.srv_heap->Heap() };
+            command_list->SetDescriptorHeaps(1, ui_heaps);
+            m_native_copy_batch->SetViewport(viewport);
+            m_native_copy_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
+            const RECT dest{ 0, 0, (LONG)target_desc.Width, (LONG)target_desc.Height };
+            m_native_copy_batch->Draw(m_native_ui.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)ui_desc.Width, (uint32_t)ui_desc.Height }, dest, DirectX::Colors::White);
+            m_native_copy_batch->End();
+            const auto to_srv = CD3DX12_RESOURCE_BARRIER::Transition(target.texture.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            command_list->ResourceBarrier(1, &to_srv);
+            m_native_hud_ready = true;
+        }
+    }
+
     commands.execute();
 
     for (uint32_t eye = 0; eye < 2; ++eye) {
         m_openxr.copy(eye, m_native_eye[eye].texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+    if (m_native_hud_ready) {
+        m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI, m_native_hud_target.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
 
     // The images each eye of the headset receives, next to the back buffer capture.
@@ -1051,6 +1105,9 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
         return err;
     }
     if(auto err = create_swapchain((int)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, (int)DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, backbuffer_desc.Width, backbuffer_desc.Height)) {
+        return err;
+    }
+    if(auto err = create_swapchain((int)runtimes::OpenXR::SwapchainIndex::GAME_UI, (int)DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, backbuffer_desc.Width, backbuffer_desc.Height)) {
         return err;
     }
     this->last_resolution = {vr->get_hmd_width(), vr->get_hmd_height()};

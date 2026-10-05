@@ -200,6 +200,15 @@ public:
         }
         return m_native_ui_source;
     }
+    // Native stereo can show the game's HUD on a panel in the world instead of over each eye: width and distance in metres.
+    void set_native_hud_panel(bool enabled, float width, float distance) {
+        m_native_hud_panel = enabled;
+        m_native_hud_panel_width = width;
+        m_native_hud_panel_distance = distance;
+    }
+    bool is_native_hud_panel() const { return m_native_hud_panel; }
+    float get_native_hud_panel_width() const { return m_native_hud_panel_width; }
+    float get_native_hud_panel_distance() const { return m_native_hud_panel_distance; }
     // Null when the eye has not been captured in the last few frames.
     Microsoft::WRL::ComPtr<ID3D12Resource> get_native_eye_source(uint32_t eye) {
         std::scoped_lock _{ m_eye_source_mutex };
@@ -649,6 +658,9 @@ public:
     std::atomic<bool> m_native_stereo_requested{false};
     std::atomic<bool> m_native_mono_frame{false};
     std::atomic<bool> m_native_full_frame{false};
+    std::atomic<bool> m_native_hud_panel{false};
+    std::atomic<float> m_native_hud_panel_width{2.0f};
+    std::atomic<float> m_native_hud_panel_distance{2.0f};
     std::mutex m_eye_source_mutex{};
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> m_native_eye_sources{};
     std::array<int64_t, 2> m_native_eye_source_frames{ -100, -100 };
