@@ -177,6 +177,24 @@ public:
     void set_native_mono_frame(bool mono) { m_native_mono_frame = mono; }
     bool is_native_mono_frame() const { return m_native_mono_frame; }
     bool submits_every_frame() const { return is_using_async_aer() || m_native_stereo; }
+    // Full-frame native stereo: each eye renders the whole back buffer in turn and the game hands over a copy of
+    // each finished eye image; the back buffer itself holds whichever eye rendered last.
+    void set_native_full_frame(bool full_frame) { m_native_full_frame = full_frame; }
+    bool is_native_full_frame() const { return m_native_full_frame; }
+    // The texture stays in PIXEL_SHADER_RESOURCE state between frames.
+    void set_native_eye_source(uint32_t eye, ID3D12Resource* texture) {
+        std::scoped_lock _{ m_eye_source_mutex };
+        m_native_eye_sources[eye & 1] = texture;
+        m_native_eye_source_frames[eye & 1] = m_engine_frame_count;
+    }
+    // Null when the eye has not been captured in the last few frames.
+    Microsoft::WRL::ComPtr<ID3D12Resource> get_native_eye_source(uint32_t eye) {
+        std::scoped_lock _{ m_eye_source_mutex };
+        if (m_engine_frame_count - m_native_eye_source_frames[eye & 1] > 3) {
+            return nullptr;
+        }
+        return m_native_eye_sources[eye & 1];
+    }
     // The next presented back buffer is saved as a PNG to this path.
     void request_backbuffer_dump(std::wstring path) {
         std::scoped_lock _{ m_dump_mutex };
@@ -617,6 +635,10 @@ public:
     std::atomic<bool> m_native_stereo{false};
     std::atomic<bool> m_native_stereo_requested{false};
     std::atomic<bool> m_native_mono_frame{false};
+    std::atomic<bool> m_native_full_frame{false};
+    std::mutex m_eye_source_mutex{};
+    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> m_native_eye_sources{};
+    std::array<int64_t, 2> m_native_eye_source_frames{ -100, -100 };
     std::mutex m_dump_mutex{};
     std::wstring m_dump_path{};
 

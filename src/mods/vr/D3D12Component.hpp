@@ -63,6 +63,10 @@ private:
     // Copies each half without blending; menus leave the back buffer partly transparent.
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_native_copy_batch{};
     DXGI_FORMAT m_native_copy_format{ DXGI_FORMAT_UNKNOWN };
+    // Shader views of the eye images the game hands over in full-frame native stereo.
+    std::array<d3d12::TextureContext, 2> m_native_capture{};
+    std::array<ID3D12Resource*, 2> m_native_capture_source{};
+    std::wstring m_eye_dump_path{};
     std::array<d3d12::TextureContext, 2> m_native_eye{};
     std::array<d3d12::ResourceCopier, 3> m_generic_copiers{};
 

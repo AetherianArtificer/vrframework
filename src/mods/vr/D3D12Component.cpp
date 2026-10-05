@@ -528,13 +528,48 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     commands.wait(INFINITE);
     commands.copy(backbuffer, m_native_source.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT);
 
-    // Each half of the side-by-side buffer is stretched over its eye's whole image.
+    // Full frame: each eye's own captured image, or the whole back buffer for both eyes when an eye has none.
+    // Side by side: each half of the buffer is stretched over its eye's whole image.
+    const bool full_frame = vr->is_native_full_frame();
+    std::array<bool, 2> captured{};
+    if (full_frame && !mono) {
+        auto device = g_framework->get_d3d12_hook()->get_device();
+        for (uint32_t eye = 0; eye < 2; ++eye) {
+            auto source = vr->get_native_eye_source(eye);
+            if (source == nullptr) {
+                continue;
+            }
+            if (m_native_capture_source[eye] != source.Get() || m_native_capture[eye].texture == nullptr) {
+                m_native_capture[eye].reset();
+                const auto format = source->GetDesc().Format;
+                DXGI_FORMAT typed = format;
+                switch (format) {
+                case DXGI_FORMAT_R8G8B8A8_TYPELESS: typed = DXGI_FORMAT_R8G8B8A8_UNORM; break;
+                case DXGI_FORMAT_B8G8R8A8_TYPELESS: typed = DXGI_FORMAT_B8G8R8A8_UNORM; break;
+                case DXGI_FORMAT_R10G10B10A2_TYPELESS: typed = DXGI_FORMAT_R10G10B10A2_UNORM; break;
+                case DXGI_FORMAT_R16G16B16A16_TYPELESS: typed = DXGI_FORMAT_R16G16B16A16_FLOAT; break;
+                default: break;
+                }
+                if (!m_native_capture[eye].setup(device, source.Get(), typed, typed, L"Native stereo eye capture")) {
+                    spdlog::error("[VR] Native stereo eye {} capture has no shader view (format {})", eye, (uint32_t)format);
+                    m_native_capture[eye].reset();
+                    m_native_capture_source[eye] = nullptr;
+                    continue;
+                }
+                m_native_capture_source[eye] = source.Get();
+                spdlog::info("[VR] Native stereo eye {} shows its captured image {}x{} format {}", eye, source->GetDesc().Width, source->GetDesc().Height, (uint32_t)format);
+            }
+            captured[eye] = true;
+        }
+    }
+
     auto command_list = commands.cmd_list.Get();
     for (uint32_t eye = 0; eye < 2; ++eye) {
         auto& dst = m_native_eye[eye];
         const auto dst_desc = dst.texture->GetDesc();
-        const LONG left = (mono ? 0 : (LONG)eye) * half_width;
-        const RECT source{ left, 0, left + half_width, (LONG)desc.Height };
+        const bool whole = full_frame && (mono || !captured[eye]);
+        const LONG left = whole ? 0 : (mono ? 0 : (LONG)eye) * half_width;
+        const RECT source{ left, 0, whole ? (LONG)desc.Width : left + half_width, (LONG)desc.Height };
 
         D3D12_RESOURCE_BARRIER barriers[]{
             CD3DX12_RESOURCE_BARRIER::Transition(dst.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
@@ -548,13 +583,19 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         command_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
         command_list->RSSetViewports(1, &viewport);
         command_list->RSSetScissorRects(1, &scissor);
-        ID3D12DescriptorHeap* heaps[]{ m_native_source.srv_heap->Heap() };
+        auto& view = captured[eye] ? m_native_capture[eye] : m_native_source;
+        ID3D12DescriptorHeap* heaps[]{ view.srv_heap->Heap() };
         command_list->SetDescriptorHeaps(1, heaps);
 
         m_native_copy_batch->SetViewport(viewport);
         m_native_copy_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
         const RECT dest{ 0, 0, (LONG)dst_desc.Width, (LONG)dst_desc.Height };
-        m_native_copy_batch->Draw(m_native_source.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)desc.Width, (uint32_t)desc.Height }, dest, &source, DirectX::Colors::White);
+        if (captured[eye]) {
+            const auto capture_desc = m_native_capture[eye].texture->GetDesc();
+            m_native_copy_batch->Draw(view.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)capture_desc.Width, (uint32_t)capture_desc.Height }, dest, DirectX::Colors::White);
+        } else {
+            m_native_copy_batch->Draw(view.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)desc.Width, (uint32_t)desc.Height }, dest, &source, DirectX::Colors::White);
+        }
         m_native_copy_batch->End();
 
         barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -568,6 +609,21 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     for (uint32_t eye = 0; eye < 2; ++eye) {
         m_openxr.copy(eye, m_native_eye[eye].texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
+
+    // The images each eye of the headset receives, next to the back buffer capture.
+    if (!m_eye_dump_path.empty()) {
+        auto command_queue = g_framework->get_d3d12_hook()->get_command_queue();
+        for (uint32_t eye = 0; eye < 2; ++eye) {
+            auto path = m_eye_dump_path;
+            const auto dot = path.rfind(L'.');
+            path.insert(dot == std::wstring::npos ? path.size() : dot, eye == 0 ? L"_hmd_left" : L"_hmd_right");
+            const auto hr = DirectX::SaveWICTextureToFile(command_queue, m_native_eye[eye].texture.Get(), GUID_ContainerFormatPng, path.c_str(),
+                                                          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            spdlog::info("[VR] {} eye image saved to {} (hr {:x}, {})", eye == 0 ? "Left" : "Right", utility::narrow(path), (uint32_t)hr,
+                         captured[eye] ? "captured eye image" : "back buffer");
+        }
+        m_eye_dump_path.clear();
+    }
 }
 
 void D3D12Component::dump_backbuffer(VR* vr, ID3D12Resource* backbuffer) {
@@ -580,6 +636,7 @@ void D3D12Component::dump_backbuffer(VR* vr, ID3D12Resource* backbuffer) {
                                                   D3D12_RESOURCE_STATE_PRESENT);
     const auto desc = backbuffer->GetDesc();
     spdlog::info("[VR] Back buffer {}x{} saved to {} (hr {:x})", desc.Width, desc.Height, utility::narrow(path), (uint32_t)hr);
+    m_eye_dump_path = path;
 }
 
 void D3D12Component::draw_comfort_vignette(VR* vr, ID3D12Resource* backbuffer) {
