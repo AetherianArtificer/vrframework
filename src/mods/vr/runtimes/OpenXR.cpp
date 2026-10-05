@@ -19,34 +19,37 @@ using namespace nlohmann;
 namespace runtimes {
 VRRuntime::Error OpenXR::synchronize_frame(int frame) {
     SCOPE_PROFILER();
-    std::scoped_lock _{sync_mtx};
+    std::scoped_lock wait_lock{wait_mtx};
 
-    // cant sync frame between begin and endframe
-    if (!this->session_ready || this->frame_began) {
-        return VRRuntime::Error::UNSPECIFIED;
+    {
+        std::scoped_lock _{sync_mtx};
+        if (!this->session_ready) {
+            return VRRuntime::Error::UNSPECIFIED;
+        }
+        m_last_synchronized_frame = frame;
+        if (this->frame_synced) {
+            ResetEvent(this->frame_begun_event);
+        }
     }
 
-    m_last_synchronized_frame = frame;
-
-    if (this->frame_synced) {
+    // The frame waited before must begin first. If the render thread never begins it, it stays the current frame.
+    if (this->frame_synced && WaitForSingleObject(this->frame_begun_event, 100) != WAIT_OBJECT_0) {
         return VRRuntime::Error::SUCCESS;
     }
 
-    this->begin_profile();
-
+    // Not under the lock: the render thread begins and ends the previous frame meanwhile.
     XrFrameWaitInfo frame_wait_info{XR_TYPE_FRAME_WAIT_INFO};
-    this->pipeline_state.frame_state = {XR_TYPE_FRAME_STATE};
-    auto result = xrWaitFrame(this->session, &frame_wait_info, &this->pipeline_state.frame_state);
+    XrFrameState    state{XR_TYPE_FRAME_STATE};
+    const auto      result = xrWaitFrame(this->session, &frame_wait_info, &state);
 
-    this->end_profile("xrWaitFrame");
-
+    std::scoped_lock _{sync_mtx};
     if (result != XR_SUCCESS) {
         spdlog::error("[VR] xrWaitFrame failed: {}", this->get_result_string(result));
         return (VRRuntime::Error)result;
-    } else {
-        this->got_first_sync = true;
-        this->frame_synced = true;
     }
+    this->pipeline_state.frame_state = state;
+    this->got_first_sync = true;
+    this->frame_synced = true;
 
     return VRRuntime::Error::SUCCESS;
 }
@@ -247,6 +250,7 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
                     this->session_ready = false;
                     this->frame_synced = false;
                     this->frame_began = false;
+                    SetEvent(this->frame_begun_event);
 
                     if (this->wants_reinitialize) {
                         //initialize_openxr();
@@ -477,6 +481,7 @@ void OpenXR::destroy() {
     this->system = XR_NULL_SYSTEM_ID;
     this->frame_synced = false;
     this->frame_began = false;
+    SetEvent(this->frame_begun_event);
 //    this->internal_frame_counter = 0;
 }
 
@@ -1638,28 +1643,19 @@ XrResult OpenXR::begin_frame(int frame) {
         return XR_ERROR_SESSION_NOT_READY;
     }
 
-    if (this->frame_began) {
-        spdlog::info("[VR] begin_frame called while frame already began");
-        return XR_SUCCESS;
-    }
-
-    this->begin_profile();
-
+    // A frame begun but never ended is discarded by beginning the next one.
     XrFrameBeginInfo frame_begin_info{XR_TYPE_FRAME_BEGIN_INFO};
     auto result = xrBeginFrame(this->session, &frame_begin_info);
 
-    this->end_profile("xrBeginFrame");
-
-    if (result != XR_SUCCESS) {
+    if (result != XR_SUCCESS && result != XR_FRAME_DISCARDED) {
         spdlog::error("[VR] xrBeginFrame failed: {}", this->get_result_string(result));
+        return result;
     }
 
-    if (result == XR_ERROR_CALL_ORDER_INVALID) {
-        synchronize_frame(frame);
-        result = xrBeginFrame(this->session, &frame_begin_info);
-    }
-
-    this->frame_began = result == XR_SUCCESS || result == XR_FRAME_DISCARDED; // discarded means endFrame was not called
+    this->began_frame_state = this->pipeline_state.frame_state;
+    this->frame_began = true;
+    this->frame_synced = false;
+    SetEvent(this->frame_begun_event);
 
     return result;
 }
@@ -1669,7 +1665,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     SCOPE_PROFILER();
     std::scoped_lock _{sync_mtx};
 
-    if (!this->ready() || !this->got_first_poses || !this->frame_synced) {
+    if (!this->ready() || !this->got_first_poses) {
         return XR_ERROR_SESSION_NOT_READY;
     }
 
@@ -1688,7 +1684,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     auto current_pipeline = &this->pipeline_state;
 
 
-    if (current_pipeline->frame_state.shouldRender == XR_TRUE) {
+    if (this->began_frame_state.shouldRender == XR_TRUE) {
         projection_layer_views.resize(current_pipeline->stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
         if (!ModSettings::showFlatScreenDisplay()) {
             for (auto i = 0; i < projection_layer_views.size(); ++i) {
@@ -1763,7 +1759,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     }
 
     XrFrameEndInfo frame_end_info{XR_TYPE_FRAME_END_INFO};
-    frame_end_info.displayTime = current_pipeline->frame_state.predictedDisplayTime;
+    frame_end_info.displayTime = this->began_frame_state.predictedDisplayTime;
     frame_end_info.environmentBlendMode = this->blend_mode;
     frame_end_info.layerCount = (uint32_t)layers.size();
     frame_end_info.layers = layers.data();
@@ -1778,9 +1774,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         spdlog::error("[VR] xrEndFrame failed: {}", this->get_result_string(result));
     }
 
-//    internal_frame_counter++;
     this->frame_began = false;
-    this->frame_synced = false;
 
     return result;
 }

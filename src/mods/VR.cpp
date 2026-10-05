@@ -1033,7 +1033,10 @@ void VR::on_begin_rendering(int frame) {
                 } else if (runtime->synchronize_frame(frame) != VRRuntime::Error::SUCCESS) {
                     return;
                 }
-                m_openxr->begin_frame(frame);
+                // Begun on the render thread when it starts this frame, or at the latest at present.
+                if (!m_pipelined_frames) {
+                    m_openxr->begin_frame(frame);
+                }
             } else {
                 if (runtime->synchronize_frame(frame) != VRRuntime::Error::SUCCESS) {
                     return;
@@ -1063,9 +1066,17 @@ void VR::on_wait_rendering(int frame) {
         return;
     }
 
-    // Wait for the previous frame's present before starting this frame's render work.
-    WaitForSingleObject(m_present_finished_event, 333);
-    ResetEvent(m_present_finished_event);
+    // Without pipelining the game waits for the previous frame's present before simulating the next one.
+    if (!m_pipelined_frames) {
+        WaitForSingleObject(m_present_finished_event, 333);
+        ResetEvent(m_present_finished_event);
+    }
+}
+
+void VR::on_render_start(int frame) {
+    if (m_pipelined_frames && get_runtime()->loaded && is_hmd_active() && get_runtime()->is_openxr() && m_openxr->ready() && m_openxr->frame_synced) {
+        m_openxr->begin_frame(frame);
+    }
 }
 
 void VR::on_xinput_get_capabilities(uint32_t* retval, uint32_t user_index, uint32_t flags, XINPUT_CAPABILITIES* capabilities) {

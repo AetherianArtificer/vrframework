@@ -73,7 +73,7 @@ struct OpenXR final : public VRRuntime {
     }
 
     inline bool should_render() const {
-        return this->pipeline_state.frame_state.shouldRender == XR_TRUE;
+        return (this->frame_began ? this->began_frame_state : this->pipeline_state.frame_state).shouldRender == XR_TRUE;
     }
 
     inline auto& get_view_space_location() const {
@@ -176,8 +176,13 @@ public:
 //TODO make it definition
     double prediction_scale{1.0};
     bool session_ready{false};
-    bool frame_began{false};
-    bool frame_synced{false};
+    // A frame is waited on the game thread and begun and ended on the render thread, so the game can simulate the next
+    // frame while the render thread submits this one. The next wait holds until the waited frame has begun.
+    std::atomic<bool> frame_began{false};
+    std::atomic<bool> frame_synced{false};
+    XrFrameState      began_frame_state{XR_TYPE_FRAME_STATE};
+    HANDLE            frame_begun_event{CreateEventW(nullptr, TRUE, TRUE, nullptr)};
+    std::mutex        wait_mtx{};
 #ifdef DEBUG_PROFILING_ENABLED
     bool profile_calls{true};
 #else

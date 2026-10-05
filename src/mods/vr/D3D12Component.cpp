@@ -44,6 +44,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         return vr::VRCompositorError_None;
     }
 
+    if (vr->m_openxr->ready() && !vr->m_openxr->frame_began && vr->m_openxr->frame_synced) {
+        vr->m_openxr->begin_frame(vr->m_presenter_frame_count);
+    }
+
     if (runtime->ready() && vr->m_openxr->frame_began) {
         auto fw_rt = g_framework->get_rendertarget_d3d12();
         if (fw_rt && g_framework->is_drawing_ui()) {

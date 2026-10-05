@@ -98,6 +98,9 @@ public:
     void on_end_rendering(void* entry);
 //    void on_pre_wait_rendering(void* entry);
     void on_wait_rendering(int frame);
+    // The render thread starts submitting a frame: with pipelining, the frame begins here.
+    void on_render_start(int frame);
+    void set_pipelined_frames(bool pipelined) { m_pipelined_frames = pipelined; }
     void set_resolution_scale(float scale) {
         m_resolution_scale->value() = scale;
         if (m_openxr) {
@@ -638,6 +641,7 @@ private:
     uint32_t m_lowest_xinput_user_index{};
 
     HANDLE m_present_finished_event{CreateEvent(nullptr, TRUE, FALSE, nullptr)};
+    std::atomic<bool> m_pipelined_frames{true};
 
     Vector4f m_raw_projections[2]{};
 
