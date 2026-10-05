@@ -60,6 +60,9 @@ private:
     d3d12::TextureContext m_converted_eye_tex{};
     // Native stereo: a shader-readable copy of the back buffer, and each eye scaled to its swapchain size.
     d3d12::TextureContext m_native_source{};
+    // Copies each half without blending; menus leave the back buffer partly transparent.
+    std::unique_ptr<DirectX::DX12::SpriteBatch> m_native_copy_batch{};
+    DXGI_FORMAT m_native_copy_format{ DXGI_FORMAT_UNKNOWN };
     std::array<d3d12::TextureContext, 2> m_native_eye{};
     std::array<d3d12::ResourceCopier, 3> m_generic_copiers{};
 

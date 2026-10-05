@@ -6,6 +6,7 @@
 
 #include <../../../_deps/directxtk12-src/Inc/RenderTargetState.h>
 #include <../../../_deps/directxtk12-src/Inc/ResourceUploadBatch.h>
+#include <../../../_deps/directxtk12-src/Inc/CommonStates.h>
 
 #include "D3D12Component.hpp"
 #include <../../../_deps/directxtk12-src/Src/d3dx12.h>
@@ -511,6 +512,18 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     const auto half_width = (LONG)(desc.Width / 2);
     const bool mono = vr->is_native_mono_frame();
 
+    const auto eye_format = m_native_eye[0].texture->GetDesc().Format;
+    if (m_native_copy_batch == nullptr || m_native_copy_format != eye_format) {
+        auto device = g_framework->get_d3d12_hook()->get_device();
+        DirectX::ResourceUploadBatch upload{ device };
+        upload.Begin();
+        DirectX::RenderTargetState output_state{ eye_format, DXGI_FORMAT_UNKNOWN };
+        DirectX::SpriteBatchPipelineStateDescription pd{ output_state, &DirectX::DX12::CommonStates::Opaque };
+        m_native_copy_batch = std::make_unique<DirectX::DX12::SpriteBatch>(device, upload, pd);
+        upload.End(g_framework->get_d3d12_hook()->get_command_queue()).wait();
+        m_native_copy_format = eye_format;
+    }
+
     auto& commands = m_native_source.commands;
     commands.wait(INFINITE);
     commands.copy(backbuffer, m_native_source.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT);
@@ -538,11 +551,11 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         ID3D12DescriptorHeap* heaps[]{ m_native_source.srv_heap->Heap() };
         command_list->SetDescriptorHeaps(1, heaps);
 
-        m_sprite_batch->SetViewport(viewport);
-        m_sprite_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
+        m_native_copy_batch->SetViewport(viewport);
+        m_native_copy_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
         const RECT dest{ 0, 0, (LONG)dst_desc.Width, (LONG)dst_desc.Height };
-        m_sprite_batch->Draw(m_native_source.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)desc.Width, (uint32_t)desc.Height }, dest, &source, DirectX::Colors::White);
-        m_sprite_batch->End();
+        m_native_copy_batch->Draw(m_native_source.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)desc.Width, (uint32_t)desc.Height }, dest, &source, DirectX::Colors::White);
+        m_native_copy_batch->End();
 
         barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
