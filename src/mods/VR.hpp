@@ -189,6 +189,19 @@ public:
         m_native_ui_source = texture;
         m_native_ui_source_frame = m_engine_frame_count;
     }
+    // A fullscreen menu's scene without its UI; same state rules as the eye images.
+    void set_native_menu_scene(ID3D12Resource* texture) {
+        std::scoped_lock _{ m_eye_source_mutex };
+        m_native_menu_scene = texture;
+        m_native_menu_scene_frame = m_engine_frame_count;
+    }
+    Microsoft::WRL::ComPtr<ID3D12Resource> get_native_menu_scene() {
+        std::scoped_lock _{ m_eye_source_mutex };
+        if (m_engine_frame_count - m_native_menu_scene_frame > 3) {
+            return nullptr;
+        }
+        return m_native_menu_scene;
+    }
     Microsoft::WRL::ComPtr<ID3D12Resource> get_native_ui_source() {
         std::scoped_lock _{ m_eye_source_mutex };
         if (m_engine_frame_count - m_native_ui_source_frame > 3) {
@@ -733,6 +746,8 @@ public:
     std::atomic<float> m_native_hud_panel_distance{2.0f};
     mutable std::mutex m_wrist_mtx{};
     std::array<WristPanel, kWristPanels> m_wrist_panels{};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_native_menu_scene{};
+    int m_native_menu_scene_frame{ -100 };
     std::mutex m_eye_source_mutex{};
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> m_native_eye_sources{};
     std::array<int64_t, 2> m_native_eye_source_frames{ -100, -100 };

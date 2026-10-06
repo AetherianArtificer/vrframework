@@ -79,6 +79,8 @@ private:
     std::unique_ptr<DirectX::DescriptorHeap> m_menu_room_edge_heap{};
     d3d12::TextureContext m_menu_room_target{};
     bool m_menu_room_ready{false};
+    // The menu UI's width over height while a fullscreen menu's UI is on its own layer, otherwise zero.
+    float m_menu_ui_aspect{0.0f};
     bool m_native_wrist_ready{false};
     bool m_native_hud_ready{false};
     std::array<d3d12::TextureContext, 2> m_native_eye{};

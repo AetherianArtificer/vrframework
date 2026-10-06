@@ -885,9 +885,9 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     return layer;
 }
 
-std::array<XrCompositionLayerBaseHeader*, 4> OverlayComponent::OpenXR::generate_menu_layers(bool flat, bool room_ready) {
+std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_menu_layers(bool flat, bool room_ready, float ui_aspect) {
     auto& vr = VR::get();
-    std::array<XrCompositionLayerBaseHeader*, 4> layers{};
+    std::array<XrCompositionLayerBaseHeader*, 5> layers{};
     if (!flat) {
         m_menu_placed = false;
         return layers;
@@ -955,7 +955,11 @@ std::array<XrCompositionLayerBaseHeader*, 4> OverlayComponent::OpenXR::generate_
         }
     }
 
-    // The menu at a size that reads without turning the head.
+    // The menu at a size that reads without turning the head; with its UI on a layer of its own, the scene sits
+    // further back at the same angular size.
+    const float kMenuAngle = glm::radians(75.0f);
+    const auto& ui_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI];
+    const bool separate_ui = ui_aspect > 0.0f && ui_swapchain.handle != XR_NULL_HANDLE;
     const auto band = VR::menu_band((int32_t)eye.width, (int32_t)eye.height);
     auto& panel = m_menu_panel;
     panel = {XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
@@ -966,10 +970,32 @@ std::array<XrCompositionLayerBaseHeader*, 4> OverlayComponent::OpenXR::generate_
     panel.subImage.imageRect.extent = {band[2] - band[0], band[3] - band[1]};
     panel.pose.orientation = orientation;
     panel.pose.position = position;
-    panel.radius = 3.0f;
-    panel.centralAngle = glm::radians(75.0f);
+    panel.radius = separate_ui ? 4.5f : 3.0f;
+    panel.centralAngle = kMenuAngle;
     panel.aspectRatio = (float)(band[2] - band[0]) / (float)(band[3] - band[1]);
     layers[count++] = (XrCompositionLayerBaseHeader*)&panel;
+
+    if (separate_ui) {
+        auto& ui = m_menu_ui;
+        ui = {XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
+        ui.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+        ui.space = vr->m_openxr->stage_space;
+        ui.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        ui.subImage.swapchain = ui_swapchain.handle;
+        ui.subImage.imageRect.offset = {0, 0};
+        ui.subImage.imageRect.extent = {(int32_t)ui_swapchain.width, (int32_t)ui_swapchain.height};
+        ui.pose.orientation = orientation;
+        ui.pose.position = position;
+        ui.radius = 3.0f;
+        ui.centralAngle = kMenuAngle;
+        ui.aspectRatio = ui_aspect;
+        layers[count++] = (XrCompositionLayerBaseHeader*)&ui;
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            spdlog::info("[VR] Menu UI shown on its own layer in front of the menu's scene");
+        }
+    }
     return layers;
 }
 
