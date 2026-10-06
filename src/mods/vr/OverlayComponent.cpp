@@ -885,6 +885,46 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     return layer;
 }
 
+std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComponent::OpenXR::generate_menu_cylinder(bool flat) {
+    auto& vr = VR::get();
+    if (!flat) {
+        m_menu_placed = false;
+        return std::nullopt;
+    }
+    const auto& swapchain = vr->m_openxr->swapchains[0];
+    if (!vr->m_openxr->is_cylinder_layer_allowed() || swapchain.handle == XR_NULL_HANDLE || swapchain.width == 0 || swapchain.height == 0) {
+        return std::nullopt;
+    }
+
+    // Centred on the head where it looks when the menu opens, then fixed in the room.
+    if (!m_menu_placed) {
+        const auto head = glm::mat4{vr->get_transform(0)};
+        const auto forward = -glm::vec3{head[2]};
+        m_menu_yaw = std::atan2(-forward.x, -forward.z);
+        m_menu_position = glm::vec3{head[3]};
+        m_menu_placed = true;
+    }
+    auto pose = glm::rotate(glm::mat4{1.0f}, m_menu_yaw, glm::vec3{0.0f, 1.0f, 0.0f});
+    pose[3] = glm::vec4{m_menu_position, 1.0f};
+    pose = glm::inverse(vr->get_transform_offset()) * pose;
+
+    auto& layer = m_menu_cylinder;
+    layer = {XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
+    layer.layerFlags = 0;
+    layer.space = vr->m_openxr->stage_space;
+    layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    layer.subImage.swapchain = swapchain.handle;
+    layer.subImage.imageRect.offset = {0, 0};
+    layer.subImage.imageRect.extent = {(int32_t)swapchain.width, (int32_t)swapchain.height};
+    layer.subImage.imageArrayIndex = 0;
+    layer.pose.orientation = runtimes::OpenXR::to_openxr(glm::normalize(glm::quat_cast(pose)));
+    layer.pose.position = runtimes::OpenXR::to_openxr(pose[3]);
+    layer.radius = 2.5f;
+    layer.centralAngle = glm::radians(135.0f);
+    layer.aspectRatio = (float)swapchain.width / (float)swapchain.height;
+    return layer;
+}
+
 std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::OpenXR::generate_framework_ui_quad() {
     if (!g_framework->is_drawing_ui()) {
         m_parent->m_framework_intersect_state.intersecting = false;

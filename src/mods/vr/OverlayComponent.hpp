@@ -155,6 +155,8 @@ private:
         // The game's HUD on a panel that stays in front of the player and recentres after a larger turn.
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_game_ui_quad();
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_wrist_quad(int slot);
+        // Fullscreen menus on a cylinder around the player, placed where the head looks when the menu opens.
+        std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> generate_menu_cylinder(bool flat);
         
     private:
         XrCompositionLayerQuad m_slate_layer{};
@@ -164,6 +166,10 @@ private:
         XrCompositionLayerQuad m_framework_ui_layer{};
         XrCompositionLayerQuad m_game_ui_layer{};
         XrCompositionLayerQuad m_wrist_layers[2]{};
+        XrCompositionLayerCylinderKHR m_menu_cylinder{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
+        bool m_menu_placed{false};
+        float m_menu_yaw{0.0f};
+        glm::vec3 m_menu_position{};
         bool m_wrist_shown[2]{};
         float m_game_ui_yaw{0.0f};
         bool m_game_ui_placed{false};

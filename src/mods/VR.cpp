@@ -310,6 +310,8 @@ std::optional<std::string> VR::initialize_openxr() {
         runtimes::OpenXR::ext_body_fidelity = runtimes::OpenXR::ext_body_tracking && enable_if_available(XR_META_BODY_TRACKING_FIDELITY_EXTENSION_NAME);
         runtimes::OpenXR::ext_hand_tracking = enable_if_available(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
         runtimes::OpenXR::ext_hand_data_source = runtimes::OpenXR::ext_hand_tracking && enable_if_available(XR_EXT_HAND_TRACKING_DATA_SOURCE_EXTENSION_NAME);
+        // Fullscreen menus wrap around the player on a cylinder.
+        enable_if_available(XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME);
 
         XrInstanceCreateInfo instance_create_info{XR_TYPE_INSTANCE_CREATE_INFO};
         instance_create_info.next = nullptr;

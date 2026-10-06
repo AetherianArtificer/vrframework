@@ -97,6 +97,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
         }
 
+        vr->m_openxr->flat_layer = nullptr;
+        if (const auto cylinder = openxr_overlay.generate_menu_cylinder(vr->is_presented_frame_flat())) {
+            vr->m_openxr->flat_layer = (XrCompositionLayerBaseHeader*)&cylinder->get();
+        }
         auto result = vr->m_openxr->end_frame(quad_layers, vr->m_presenter_frame_count);
         if (result == XR_ERROR_LAYER_INVALID) {
             spdlog::info("[VR] Attempting to correct invalid layer");

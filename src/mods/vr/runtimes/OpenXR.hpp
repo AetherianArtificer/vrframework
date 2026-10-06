@@ -216,6 +216,8 @@ public:
 //    XrSpaceLocation view_space_location{XR_TYPE_SPACE_LOCATION};
 
     std::unordered_set<std::string> enabled_extensions{};
+    // Shown instead of the flat screen quad on flat frames when set, for the frame about to end.
+    XrCompositionLayerBaseHeader* flat_layer{nullptr};
 
     std::vector<XrViewConfigurationView> view_configs{};
     Swapchain swapchains[(uintptr_t)SwapchainIndex::END]{};

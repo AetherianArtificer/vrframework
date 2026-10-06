@@ -1731,6 +1731,8 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             layer.views = projection_layer_views.data();
             layers.push_back((XrCompositionLayerBaseHeader*)&layer);
 
+        } else if (this->flat_layer != nullptr) {
+            layers.push_back(this->flat_layer);
         } else {
             l_quad_layers.resize(1);
             // Initialize quad layers for each eye
