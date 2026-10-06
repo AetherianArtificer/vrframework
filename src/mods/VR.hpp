@@ -222,16 +222,6 @@ public:
         std::scoped_lock _{ m_wrist_mtx };
         return m_wrist_panels;
     }
-    // Other parts of the HUD left off the floating HUD panel, as fractions of the HUD image (left, top, right, bottom).
-    static constexpr int kHudCuts = 2;
-    void set_native_hud_cuts(const std::array<std::array<float, 4>, kHudCuts>& cuts) {
-        std::scoped_lock _{ m_wrist_mtx };
-        m_hud_cuts = cuts;
-    }
-    std::array<std::array<float, 4>, kHudCuts> get_native_hud_cuts() const {
-        std::scoped_lock _{ m_wrist_mtx };
-        return m_hud_cuts;
-    }
     bool has_native_wrist_panels() const {
         std::scoped_lock _{ m_wrist_mtx };
         return m_wrist_panels[0].hand >= 0 || m_wrist_panels[1].hand >= 0;
@@ -731,7 +721,6 @@ public:
     std::atomic<float> m_native_hud_panel_distance{2.0f};
     mutable std::mutex m_wrist_mtx{};
     std::array<WristPanel, kWristPanels> m_wrist_panels{};
-    std::array<std::array<float, 4>, kHudCuts> m_hud_cuts{};
     std::mutex m_eye_source_mutex{};
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> m_native_eye_sources{};
     std::array<int64_t, 2> m_native_eye_source_frames{ -100, -100 };
