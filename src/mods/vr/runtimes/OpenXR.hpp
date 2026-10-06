@@ -27,8 +27,7 @@ struct OpenXR final : public VRRuntime {
         FRAMEWORK_UI = 4,
         GAME_UI = 5,
         WRIST_UI = 6,
-        MENU_ROOM = 7,
-        END = 8,
+        END = 7,
     };
 
     OpenXR() {
@@ -218,7 +217,7 @@ public:
 
     std::unordered_set<std::string> enabled_extensions{};
     // Shown instead of the flat screen quad on flat frames when set, back to front, for the frame about to end.
-    std::array<XrCompositionLayerBaseHeader*, 5> flat_layers{};
+    std::array<XrCompositionLayerBaseHeader*, 2> flat_layers{};
 
     std::vector<XrViewConfigurationView> view_configs{};
     Swapchain swapchains[(uintptr_t)SwapchainIndex::END]{};

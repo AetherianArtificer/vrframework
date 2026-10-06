@@ -47,8 +47,6 @@ public:
 private:
     void setup();
     void prepare_comfort_textures(VR* vr);
-    // The menu room's own texture for darkening the floor and ceiling toward the walls, made on first use.
-    bool ensure_menu_room_edge();
     void copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer);
     bool setup_native_stereo_textures(ID3D12Resource* backbuffer, VR* vr);
     void dump_backbuffer(VR* vr, ID3D12Resource* backbuffer);
@@ -71,14 +69,6 @@ private:
     // The HUD for the world panel, drawn at the panel swapchain's size.
     d3d12::TextureContext m_native_hud_target{};
     d3d12::TextureContext m_native_wrist_target{};
-    // The menu room's image, coloured from the menu band shrunk in steps of a quarter so the colours hold steady.
-    static constexpr int kMenuRoomSteps = 4;
-    d3d12::TextureContext m_menu_room_steps[kMenuRoomSteps]{};
-    d3d12::TextureContext m_menu_room_colors{};
-    ComPtr<ID3D12Resource> m_menu_room_edge{};
-    std::unique_ptr<DirectX::DescriptorHeap> m_menu_room_edge_heap{};
-    d3d12::TextureContext m_menu_room_target{};
-    bool m_menu_room_ready{false};
     // The menu UI's width over height while a fullscreen menu's UI is on its own layer, otherwise zero.
     float m_menu_ui_aspect{0.0f};
     bool m_native_wrist_ready{false};

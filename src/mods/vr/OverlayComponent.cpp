@@ -885,9 +885,9 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     return layer;
 }
 
-std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_menu_layers(bool flat, bool room_ready, float ui_aspect) {
+std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_menu_layers(bool flat, float ui_aspect) {
     auto& vr = VR::get();
-    std::array<XrCompositionLayerBaseHeader*, 5> layers{};
+    std::array<XrCompositionLayerBaseHeader*, 2> layers{};
     if (!flat) {
         m_menu_placed = false;
         return layers;
@@ -912,53 +912,6 @@ std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_
     const auto position = runtimes::OpenXR::to_openxr(pose[3]);
 
     int count = 0;
-    const auto& room_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::MENU_ROOM];
-    if (room_ready && room_swapchain.handle != XR_NULL_HANDLE) {
-        // A round room with its floor below the eyes and its ceiling above them, walls 7 m away. The play space's
-        // origin is not always on the floor, so the room is placed from the head.
-        constexpr float kRadius = 7.0f;
-        constexpr float kBelowEyes = 1.4f;
-        constexpr float kAboveEyes = 1.8f;
-        const float floor_y = position.y - kBelowEyes;
-        const float ceiling_y = position.y + kAboveEyes;
-        auto cell = [&](const std::array<int32_t, 4>& r) {
-            XrSwapchainSubImage image{};
-            image.swapchain = room_swapchain.handle;
-            image.imageRect.offset = {r[0] + 1, r[1] + 1};
-            image.imageRect.extent = {r[2] - r[0] - 2, r[3] - r[1] - 2};
-            return image;
-        };
-        auto& walls = m_menu_room;
-        walls = {XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
-        walls.space = vr->m_openxr->stage_space;
-        walls.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-        walls.subImage = cell(VR::kMenuRoomWalls);
-        walls.pose.orientation = orientation;
-        walls.pose.position = {position.x, (floor_y + ceiling_y) * 0.5f, position.z};
-        walls.radius = kRadius;
-        walls.centralAngle = glm::two_pi<float>();
-        walls.aspectRatio = kRadius * walls.centralAngle / (ceiling_y - floor_y);
-        layers[count++] = (XrCompositionLayerBaseHeader*)&walls;
-
-        auto flat_quad = [&](XrCompositionLayerQuad& quad, const std::array<int32_t, 4>& r, float y, float pitch) {
-            quad = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-            quad.space = vr->m_openxr->stage_space;
-            quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-            quad.subImage = cell(r);
-            quad.pose.orientation = runtimes::OpenXR::to_openxr(glm::angleAxis(pitch, glm::vec3{1.0f, 0.0f, 0.0f}));
-            quad.pose.position = {position.x, y, position.z};
-            quad.size = {kRadius * 2.0f, kRadius * 2.0f};
-            layers[count++] = (XrCompositionLayerBaseHeader*)&quad;
-        };
-        flat_quad(m_menu_floor, VR::kMenuRoomFloor, floor_y, -glm::half_pi<float>());
-        flat_quad(m_menu_ceiling, VR::kMenuRoomCeiling, ceiling_y, glm::half_pi<float>());
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            spdlog::info("[VR] Menu room shown around the head at ({:.2f}, {:.2f}, {:.2f}) in the play space", position.x, position.y, position.z);
-        }
-    }
-
     // The menu at a size that reads without turning the head; with its UI on a layer of its own, the scene sits
     // further back at the same angular size.
     const float kMenuAngle = glm::radians(75.0f);

@@ -155,10 +155,9 @@ private:
         // The game's HUD on a panel that stays in front of the player and recentres after a larger turn.
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_game_ui_quad();
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_wrist_quad(int slot);
-        // Fullscreen menus: a curved panel in front, inside a room made of the menu's own blurred image, both placed
-        // where the head looks when the menu opens. Back to front; empty when not shown.
-        // With ui_aspect set, the menu's UI floats on its own panel in front of its scene.
-        std::array<XrCompositionLayerBaseHeader*, 5> generate_menu_layers(bool flat, bool room_ready, float ui_aspect);
+        // Fullscreen menus on a curved panel placed where the head looks when the menu opens; with ui_aspect set, the
+        // menu's UI floats on its own panel in front of its scene. Back to front; empty when not shown.
+        std::array<XrCompositionLayerBaseHeader*, 2> generate_menu_layers(bool flat, float ui_aspect);
         
     private:
         XrCompositionLayerQuad m_slate_layer{};
@@ -170,9 +169,6 @@ private:
         XrCompositionLayerQuad m_wrist_layers[2]{};
         XrCompositionLayerCylinderKHR m_menu_panel{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
         XrCompositionLayerCylinderKHR m_menu_ui{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
-        XrCompositionLayerCylinderKHR m_menu_room{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
-        XrCompositionLayerQuad m_menu_floor{XR_TYPE_COMPOSITION_LAYER_QUAD};
-        XrCompositionLayerQuad m_menu_ceiling{XR_TYPE_COMPOSITION_LAYER_QUAD};
         bool m_menu_placed{false};
         float m_menu_yaw{0.0f};
         glm::vec3 m_menu_position{};

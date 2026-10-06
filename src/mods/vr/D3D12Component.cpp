@@ -98,8 +98,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
 
         const bool menu_ui = m_native_hud_ready && m_menu_ui_aspect > 0.0f && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI);
-        vr->m_openxr->flat_layers = openxr_overlay.generate_menu_layers(vr->is_presented_frame_flat(),
-            m_menu_room_ready && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::MENU_ROOM), menu_ui ? m_menu_ui_aspect : 0.0f);
+        vr->m_openxr->flat_layers = openxr_overlay.generate_menu_layers(vr->is_presented_frame_flat(), menu_ui ? m_menu_ui_aspect : 0.0f);
         auto result = vr->m_openxr->end_frame(quad_layers, vr->m_presenter_frame_count);
         if (result == XR_ERROR_LAYER_INVALID) {
             spdlog::info("[VR] Attempting to correct invalid layer");
@@ -468,121 +467,6 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         }
     }
 
-    // The menu room's colours: the eye image's menu band shrunk in quarter steps to three pixels, its top, middle and
-    // bottom. The walls are a gradient through them, the floor and ceiling the bottom and top colours fading darker
-    // toward their edges.
-    m_menu_room_ready = false;
-    const auto& room_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::MENU_ROOM];
-    if (menu && vr->is_menu_room() && room_swapchain.width > 0 && ensure_menu_room_edge()) {
-        auto device = g_framework->get_d3d12_hook()->get_device();
-        auto make = [&](d3d12::TextureContext& ctx, uint32_t w, uint32_t h, const wchar_t* name) {
-            if (ctx.texture != nullptr && ctx.texture->GetDesc().Width == w && ctx.texture->GetDesc().Height == h) {
-                return true;
-            }
-            ctx.reset();
-            const CD3DX12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_DEFAULT };
-            auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, w, h, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-            ComPtr<ID3D12Resource> texture{};
-            if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&texture)))) {
-                return false;
-            }
-            texture->SetName(name);
-            if (!ctx.setup(device, texture.Get(), std::nullopt, std::nullopt, name)) {
-                ctx.reset();
-                return false;
-            }
-            return true;
-        };
-        const auto eye_desc = m_native_eye[0].texture->GetDesc();
-        const auto band = VR::menu_band((int32_t)eye_desc.Width, (int32_t)eye_desc.Height);
-        uint32_t w = (uint32_t)(band[2] - band[0]);
-        uint32_t h = (uint32_t)(band[3] - band[1]);
-        bool made = true;
-        for (int i = 0; i < kMenuRoomSteps; ++i) {
-            w = std::max(w / 4, 1u);
-            h = std::max(h / 4, 1u);
-            made = made && make(m_menu_room_steps[i], w, h, L"Menu room step");
-        }
-        made = made && make(m_menu_room_colors, 1, 3, L"Menu room colours") && make(m_menu_room_target, room_swapchain.width, room_swapchain.height, L"Menu room");
-        if (made) {
-            auto begin = [&](d3d12::TextureContext& target, bool clear) {
-                const auto target_desc = target.texture->GetDesc();
-                const auto to_rt = CD3DX12_RESOURCE_BARRIER::Transition(target.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-                command_list->ResourceBarrier(1, &to_rt);
-                const auto rtv = target.get_rtv();
-                if (clear) {
-                    const float black[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
-                    command_list->ClearRenderTargetView(rtv, black, 0, nullptr);
-                }
-                D3D12_VIEWPORT viewport{ 0.0f, 0.0f, (float)target_desc.Width, (float)target_desc.Height, D3D12_MIN_DEPTH, D3D12_MAX_DEPTH };
-                D3D12_RECT scissor{ 0, 0, (LONG)target_desc.Width, (LONG)target_desc.Height };
-                command_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-                command_list->RSSetViewports(1, &viewport);
-                command_list->RSSetScissorRects(1, &scissor);
-                m_native_copy_batch->SetViewport(viewport);
-                m_native_ui_batch->SetViewport(viewport);
-            };
-            auto end = [&](d3d12::TextureContext& target) {
-                const auto to_srv = CD3DX12_RESOURCE_BARRIER::Transition(target.texture.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-                command_list->ResourceBarrier(1, &to_srv);
-            };
-            auto size_of = [](const d3d12::TextureContext& ctx) {
-                const auto d = ctx.texture->GetDesc();
-                return DirectX::XMUINT2{ (uint32_t)d.Width, (uint32_t)d.Height };
-            };
-            auto whole = [](const d3d12::TextureContext& ctx) {
-                const auto d = ctx.texture->GetDesc();
-                return RECT{ 0, 0, (LONG)d.Width, (LONG)d.Height };
-            };
-            // Copies a source rectangle over a whole target.
-            auto shrink = [&](d3d12::TextureContext& source, const RECT& from, d3d12::TextureContext& target) {
-                begin(target, false);
-                ID3D12DescriptorHeap* heaps[]{ source.srv_heap->Heap() };
-                command_list->SetDescriptorHeaps(1, heaps);
-                m_native_copy_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
-                m_native_copy_batch->Draw(source.get_srv_gpu(), size_of(source), whole(target), &from, DirectX::Colors::White);
-                m_native_copy_batch->End();
-                end(target);
-            };
-            shrink(m_native_eye[0], RECT{ band[0], band[1], band[2], band[3] }, m_menu_room_steps[0]);
-            for (int i = 1; i < kMenuRoomSteps; ++i) {
-                shrink(m_menu_room_steps[i - 1], whole(m_menu_room_steps[i - 1]), m_menu_room_steps[i]);
-            }
-            shrink(m_menu_room_steps[kMenuRoomSteps - 1], whole(m_menu_room_steps[kMenuRoomSteps - 1]), m_menu_room_colors);
-
-            auto rect = [](const std::array<int32_t, 4>& r) { return RECT{ r[0], r[1], r[2], r[3] }; };
-            const auto colors = size_of(m_menu_room_colors);
-            begin(m_menu_room_target, true);
-            ID3D12DescriptorHeap* color_heaps[]{ m_menu_room_colors.srv_heap->Heap() };
-            command_list->SetDescriptorHeaps(1, color_heaps);
-            m_native_copy_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
-            const DirectX::XMVECTORF32 walls_tint{ { { 0.6f, 0.6f, 0.6f, 1.0f } } };
-            const DirectX::XMVECTORF32 floor_tint{ { { 0.45f, 0.45f, 0.45f, 1.0f } } };
-            const DirectX::XMVECTORF32 ceiling_tint{ { { 0.35f, 0.35f, 0.35f, 1.0f } } };
-            const RECT top{ 0, 0, 1, 1 };
-            const RECT bottom{ 0, 2, 1, 3 };
-            m_native_copy_batch->Draw(m_menu_room_colors.get_srv_gpu(), colors, rect(VR::kMenuRoomWalls), nullptr, walls_tint);
-            m_native_copy_batch->Draw(m_menu_room_colors.get_srv_gpu(), colors, rect(VR::kMenuRoomFloor), &bottom, floor_tint);
-            m_native_copy_batch->Draw(m_menu_room_colors.get_srv_gpu(), colors, rect(VR::kMenuRoomCeiling), &top, ceiling_tint);
-            m_native_copy_batch->End();
-            // Darker toward the floor's and ceiling's edges, where they meet the walls.
-            ID3D12DescriptorHeap* edge_heaps[]{ m_menu_room_edge_heap->Heap() };
-            command_list->SetDescriptorHeaps(1, edge_heaps);
-            m_native_ui_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
-            const DirectX::XMVECTORF32 edge{ { { 1.0f, 1.0f, 1.0f, 0.7f } } };
-            m_native_ui_batch->Draw(m_menu_room_edge_heap->GetGpuHandle(0), DirectX::XMUINT2{ 64, 64 }, rect(VR::kMenuRoomFloor), edge);
-            m_native_ui_batch->Draw(m_menu_room_edge_heap->GetGpuHandle(0), DirectX::XMUINT2{ 64, 64 }, rect(VR::kMenuRoomCeiling), edge);
-            m_native_ui_batch->End();
-            end(m_menu_room_target);
-            m_menu_room_ready = true;
-            static bool logged = false;
-            if (!logged) {
-                logged = true;
-                spdlog::info("[VR] Menu room image made from a {}x{} menu band", band[2] - band[0], band[3] - band[1]);
-            }
-        }
-    }
-
     // The wrist parts, each fitted into its half of a small image of their own.
     m_native_wrist_ready = false;
     const auto& wrist_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::WRIST_UI];
@@ -647,9 +531,6 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     if (m_native_wrist_ready) {
         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::WRIST_UI, m_native_wrist_target.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
-    if (m_menu_room_ready) {
-        m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::MENU_ROOM, m_menu_room_target.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    }
 
     // The images each eye of the headset receives, next to the back buffer capture.
     if (!m_eye_dump_path.empty()) {
@@ -678,40 +559,6 @@ void D3D12Component::dump_backbuffer(VR* vr, ID3D12Resource* backbuffer) {
     const auto desc = backbuffer->GetDesc();
     spdlog::info("[VR] Back buffer {}x{} saved to {} (hr {:x})", desc.Width, desc.Height, utility::narrow(path), (uint32_t)hr);
     m_eye_dump_path = path;
-}
-
-bool D3D12Component::ensure_menu_room_edge() {
-    if (m_menu_room_edge_heap != nullptr) {
-        return true;
-    }
-    auto& hook = g_framework->get_d3d12_hook();
-    auto device = hook->get_device();
-    // Premultiplied black, clear in the middle, darkening smoothly to the rim.
-    constexpr UINT kSize = 64;
-    std::vector<uint32_t> pixels(kSize * kSize);
-    for (UINT y = 0; y < kSize; ++y) {
-        for (UINT x = 0; x < kSize; ++x) {
-            const float dx = (x + 0.5f) / kSize * 2.0f - 1.0f;
-            const float dy = (y + 0.5f) / kSize * 2.0f - 1.0f;
-            const float t = std::clamp((std::sqrt(dx * dx + dy * dy) - 0.3f) / 0.7f, 0.0f, 1.0f);
-            pixels[y * kSize + x] = static_cast<uint32_t>(t * t * (3.0f - 2.0f * t) * 255.0f) << 24;
-        }
-    }
-    const auto heap_props = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-    const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, kSize, kSize, 1, 1);
-    if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_menu_room_edge)))) {
-        spdlog::error("[VR] Failed to create the menu room edge texture");
-        return false;
-    }
-    DirectX::ResourceUploadBatch upload{ device };
-    upload.Begin();
-    D3D12_SUBRESOURCE_DATA data{ pixels.data(), (LONG_PTR)(kSize * 4), (LONG_PTR)(kSize * kSize * 4) };
-    upload.Upload(m_menu_room_edge.Get(), 0, &data, 1);
-    upload.Transition(m_menu_room_edge.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    upload.End(hook->get_command_queue()).wait();
-    m_menu_room_edge_heap = std::make_unique<DirectX::DescriptorHeap>(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 1);
-    device->CreateShaderResourceView(m_menu_room_edge.Get(), nullptr, m_menu_room_edge_heap->GetCpuHandle(0));
-    return true;
 }
 
 void D3D12Component::prepare_comfort_textures(VR* vr) {
@@ -914,9 +761,6 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
         return err;
     }
     if(auto err = create_swapchain((int)runtimes::OpenXR::SwapchainIndex::WRIST_UI, (int)DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, VR::kWristImageWidth, VR::kWristImageHeight)) {
-        return err;
-    }
-    if(auto err = create_swapchain((int)runtimes::OpenXR::SwapchainIndex::MENU_ROOM, (int)DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, VR::kMenuRoomWidth, VR::kMenuRoomHeight)) {
         return err;
     }
     this->last_resolution = {vr->get_hmd_width(), vr->get_hmd_height()};
