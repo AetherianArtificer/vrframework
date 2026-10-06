@@ -457,7 +457,7 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     // toward their edges.
     m_menu_room_ready = false;
     const auto& room_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::MENU_ROOM];
-    if (mono && vr->is_presented_frame_flat() && room_swapchain.width > 0 && m_vignette_srv_heap != nullptr) {
+    if (mono && vr->is_presented_frame_flat() && room_swapchain.width > 0 && ensure_menu_room_edge()) {
         auto device = g_framework->get_d3d12_hook()->get_device();
         auto make = [&](d3d12::TextureContext& ctx, uint32_t w, uint32_t h, const wchar_t* name) {
             if (ctx.texture != nullptr && ctx.texture->GetDesc().Width == w && ctx.texture->GetDesc().Height == h) {
@@ -550,15 +550,20 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
             m_native_copy_batch->Draw(m_menu_room_colors.get_srv_gpu(), colors, rect(VR::kMenuRoomCeiling), &top, ceiling_tint);
             m_native_copy_batch->End();
             // Darker toward the floor's and ceiling's edges, where they meet the walls.
-            ID3D12DescriptorHeap* vignette_heaps[]{ m_vignette_srv_heap->Heap() };
-            command_list->SetDescriptorHeaps(1, vignette_heaps);
+            ID3D12DescriptorHeap* edge_heaps[]{ m_menu_room_edge_heap->Heap() };
+            command_list->SetDescriptorHeaps(1, edge_heaps);
             m_native_ui_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
             const DirectX::XMVECTORF32 edge{ { { 1.0f, 1.0f, 1.0f, 0.7f } } };
-            m_native_ui_batch->Draw(m_vignette_srv_heap->GetGpuHandle(0), DirectX::XMUINT2{ 256, 256 }, rect(VR::kMenuRoomFloor), edge);
-            m_native_ui_batch->Draw(m_vignette_srv_heap->GetGpuHandle(0), DirectX::XMUINT2{ 256, 256 }, rect(VR::kMenuRoomCeiling), edge);
+            m_native_ui_batch->Draw(m_menu_room_edge_heap->GetGpuHandle(0), DirectX::XMUINT2{ 64, 64 }, rect(VR::kMenuRoomFloor), edge);
+            m_native_ui_batch->Draw(m_menu_room_edge_heap->GetGpuHandle(0), DirectX::XMUINT2{ 64, 64 }, rect(VR::kMenuRoomCeiling), edge);
             m_native_ui_batch->End();
             end(m_menu_room_target);
             m_menu_room_ready = true;
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                spdlog::info("[VR] Menu room image made from a {}x{} menu band", band[2] - band[0], band[3] - band[1]);
+            }
         }
     }
 
@@ -657,6 +662,40 @@ void D3D12Component::dump_backbuffer(VR* vr, ID3D12Resource* backbuffer) {
     const auto desc = backbuffer->GetDesc();
     spdlog::info("[VR] Back buffer {}x{} saved to {} (hr {:x})", desc.Width, desc.Height, utility::narrow(path), (uint32_t)hr);
     m_eye_dump_path = path;
+}
+
+bool D3D12Component::ensure_menu_room_edge() {
+    if (m_menu_room_edge_heap != nullptr) {
+        return true;
+    }
+    auto& hook = g_framework->get_d3d12_hook();
+    auto device = hook->get_device();
+    // Premultiplied black, clear in the middle, darkening smoothly to the rim.
+    constexpr UINT kSize = 64;
+    std::vector<uint32_t> pixels(kSize * kSize);
+    for (UINT y = 0; y < kSize; ++y) {
+        for (UINT x = 0; x < kSize; ++x) {
+            const float dx = (x + 0.5f) / kSize * 2.0f - 1.0f;
+            const float dy = (y + 0.5f) / kSize * 2.0f - 1.0f;
+            const float t = std::clamp((std::sqrt(dx * dx + dy * dy) - 0.3f) / 0.7f, 0.0f, 1.0f);
+            pixels[y * kSize + x] = static_cast<uint32_t>(t * t * (3.0f - 2.0f * t) * 255.0f) << 24;
+        }
+    }
+    const auto heap_props = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+    const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, kSize, kSize, 1, 1);
+    if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_menu_room_edge)))) {
+        spdlog::error("[VR] Failed to create the menu room edge texture");
+        return false;
+    }
+    DirectX::ResourceUploadBatch upload{ device };
+    upload.Begin();
+    D3D12_SUBRESOURCE_DATA data{ pixels.data(), (LONG_PTR)(kSize * 4), (LONG_PTR)(kSize * kSize * 4) };
+    upload.Upload(m_menu_room_edge.Get(), 0, &data, 1);
+    upload.Transition(m_menu_room_edge.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    upload.End(hook->get_command_queue()).wait();
+    m_menu_room_edge_heap = std::make_unique<DirectX::DescriptorHeap>(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 1);
+    device->CreateShaderResourceView(m_menu_room_edge.Get(), nullptr, m_menu_room_edge_heap->GetCpuHandle(0));
+    return true;
 }
 
 void D3D12Component::prepare_comfort_textures(VR* vr) {

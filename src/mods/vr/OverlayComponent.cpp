@@ -948,6 +948,11 @@ std::array<XrCompositionLayerBaseHeader*, 4> OverlayComponent::OpenXR::generate_
         };
         flat_quad(m_menu_floor, VR::kMenuRoomFloor, 0.0f, -glm::half_pi<float>());
         flat_quad(m_menu_ceiling, VR::kMenuRoomCeiling, kHeight, glm::half_pi<float>());
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            spdlog::info("[VR] Menu room shown around the head at ({:.2f}, {:.2f}, {:.2f}) in the play space", position.x, position.y, position.z);
+        }
     }
 
     // The menu at a size that reads without turning the head.
