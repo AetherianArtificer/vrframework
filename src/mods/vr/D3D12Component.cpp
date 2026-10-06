@@ -532,6 +532,25 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
                 const auto dot = p.rfind(L'.');
                 p.insert(dot == std::wstring::npos ? p.size() : dot, suffix);
                 const auto desc = texture->GetDesc();
+                // PNG needs a typed format: typeless textures are copied into one first.
+                ComPtr<ID3D12Resource> typed{};
+                const auto typed_format = desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ? DXGI_FORMAT_R8G8B8A8_UNORM
+                                        : desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ? DXGI_FORMAT_B8G8R8A8_UNORM
+                                                                                      : DXGI_FORMAT_UNKNOWN;
+                if (typed_format != DXGI_FORMAT_UNKNOWN) {
+                    auto device = g_framework->get_d3d12_hook()->get_device();
+                    const CD3DX12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_DEFAULT };
+                    auto typed_desc = CD3DX12_RESOURCE_DESC::Tex2D(typed_format, desc.Width, desc.Height, 1, 1);
+                    d3d12::CommandContext copier{};
+                    if (SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &typed_desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr,
+                                                                  IID_PPV_ARGS(&typed))) &&
+                        copier.setup(L"Menu dump copy")) {
+                        copier.copy(texture, typed.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                        copier.execute();
+                        copier.wait(2000);
+                        texture = typed.Get();
+                    }
+                }
                 const auto hr = DirectX::SaveWICTextureToFile(command_queue, texture, GUID_ContainerFormatPng, p.c_str(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                                                               D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                 spdlog::info("[VR] Menu {} {}x{} saved to {} (hr {:x})", name, desc.Width, desc.Height, utility::narrow(p), (uint32_t)hr);
