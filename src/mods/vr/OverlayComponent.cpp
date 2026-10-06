@@ -927,7 +927,8 @@ std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_
     panel.subImage.imageRect.extent = {band[2] - band[0], band[3] - band[1]};
     panel.pose.orientation = orientation;
     panel.pose.position = position;
-    panel.radius = separate_ui ? 4.5f : 3.0f;
+    // Far enough behind the UI that the two read as separate depths.
+    panel.radius = separate_ui ? 8.0f : 3.0f;
     panel.centralAngle = kMenuAngle;
     panel.aspectRatio = (float)(band[2] - band[0]) / (float)(band[3] - band[1]);
     layers[count++] = (XrCompositionLayerBaseHeader*)&panel;
@@ -943,7 +944,7 @@ std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_
         ui.subImage.imageRect.extent = {(int32_t)ui_swapchain.width, (int32_t)ui_swapchain.height};
         ui.pose.orientation = orientation;
         ui.pose.position = position;
-        ui.radius = 3.0f;
+        ui.radius = 1.8f;
         ui.centralAngle = kMenuAngle;
         ui.aspectRatio = ui_aspect;
         layers[count++] = (XrCompositionLayerBaseHeader*)&ui;

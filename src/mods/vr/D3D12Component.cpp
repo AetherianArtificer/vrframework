@@ -533,6 +533,26 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     }
 
     // The images each eye of the headset receives, next to the back buffer capture.
+    if (menu && m_native_hud_ready) {
+        if (const auto path = vr->take_menu_dump_request(); !path.empty()) {
+            auto command_queue = g_framework->get_d3d12_hook()->get_command_queue();
+            auto named = [&](const wchar_t* suffix) {
+                auto p = path;
+                const auto dot = p.rfind(L'.');
+                p.insert(dot == std::wstring::npos ? p.size() : dot, suffix);
+                return p;
+            };
+            const auto ui_path = named(L"_ui");
+            const auto scene_path = named(L"_scene");
+            const auto ui_hr = DirectX::SaveWICTextureToFile(command_queue, m_native_hud_target.texture.Get(), GUID_ContainerFormatPng, ui_path.c_str(),
+                                                             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            const auto scene_hr = DirectX::SaveWICTextureToFile(command_queue, m_native_eye[0].texture.Get(), GUID_ContainerFormatPng, scene_path.c_str(),
+                                                                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            spdlog::info("[VR] Menu UI layer saved to {} (hr {:x}), its scene to {} (hr {:x})", utility::narrow(ui_path), (uint32_t)ui_hr, utility::narrow(scene_path),
+                         (uint32_t)scene_hr);
+        }
+    }
+
     if (!m_eye_dump_path.empty()) {
         auto command_queue = g_framework->get_d3d12_hook()->get_command_queue();
         for (uint32_t eye = 0; eye < 2; ++eye) {

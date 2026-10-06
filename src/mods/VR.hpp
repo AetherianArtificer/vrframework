@@ -272,6 +272,15 @@ public:
         std::scoped_lock _{ m_dump_mutex };
         return std::exchange(m_dump_path, {});
     }
+    // While a fullscreen menu shows: its UI layer and its scene are saved as PNGs, the path's name with _ui and _scene.
+    void request_menu_dump(std::wstring path) {
+        std::scoped_lock _{ m_dump_mutex };
+        m_menu_dump_path = std::move(path);
+    }
+    std::wstring take_menu_dump_request() {
+        std::scoped_lock _{ m_dump_mutex };
+        return std::exchange(m_menu_dump_path, {});
+    }
 
     bool is_gui_enabled() const {
         return true;
@@ -740,6 +749,7 @@ public:
     std::atomic<float> m_native_hud_panel_distance{2.0f};
     mutable std::mutex m_wrist_mtx{};
     std::array<WristPanel, kWristPanels> m_wrist_panels{};
+    std::wstring m_menu_dump_path{};
     Microsoft::WRL::ComPtr<ID3D12Resource> m_native_menu_scene{};
     int m_native_menu_scene_frame{ -100 };
     std::mutex m_eye_source_mutex{};
