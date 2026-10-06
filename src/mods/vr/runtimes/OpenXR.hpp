@@ -218,7 +218,7 @@ public:
 
     std::unordered_set<std::string> enabled_extensions{};
     // Shown instead of the flat screen quad on flat frames when set, back to front, for the frame about to end.
-    std::array<XrCompositionLayerBaseHeader*, 2> flat_layers{};
+    std::array<XrCompositionLayerBaseHeader*, 4> flat_layers{};
 
     std::vector<XrViewConfigurationView> view_configs{};
     Swapchain swapchains[(uintptr_t)SwapchainIndex::END]{};

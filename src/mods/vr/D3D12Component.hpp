@@ -69,8 +69,10 @@ private:
     // The HUD for the world panel, drawn at the panel swapchain's size.
     d3d12::TextureContext m_native_hud_target{};
     d3d12::TextureContext m_native_wrist_target{};
-    // The menu room's image, made from the menu band in steps of a quarter so it blurs without flicker.
-    d3d12::TextureContext m_menu_room_steps[2]{};
+    // The menu room's image, coloured from the menu band shrunk in steps of a quarter so the colours hold steady.
+    static constexpr int kMenuRoomSteps = 4;
+    d3d12::TextureContext m_menu_room_steps[kMenuRoomSteps]{};
+    d3d12::TextureContext m_menu_room_colors{};
     d3d12::TextureContext m_menu_room_target{};
     bool m_menu_room_ready{false};
     bool m_native_wrist_ready{false};

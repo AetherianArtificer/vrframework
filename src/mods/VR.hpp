@@ -214,10 +214,13 @@ public:
     static constexpr int kWristPanels = 2;
     static constexpr int kWristImageWidth = 1024;
     static constexpr int kWristImageHeight = 512;
-    // Fullscreen menus are drawn in a centred 16:9 band of the eye image; the room around them is that band blurred,
-    // side by side with its mirror image so it wraps all the way round without a seam.
-    static constexpr int kMenuRoomWidth = 128;
+    // Fullscreen menus are drawn in a centred 16:9 band of the eye image. The room around them is coloured from that
+    // band: one small image holds the walls' gradient, the floor and the ceiling, each in its own column of cells.
+    static constexpr int kMenuRoomWidth = 224;
     static constexpr int kMenuRoomHeight = 64;
+    static constexpr std::array<int32_t, 4> kMenuRoomWalls{ 0, 0, 32, 64 };
+    static constexpr std::array<int32_t, 4> kMenuRoomFloor{ 64, 0, 128, 64 };
+    static constexpr std::array<int32_t, 4> kMenuRoomCeiling{ 160, 0, 224, 64 };
     static std::array<int32_t, 4> menu_band(int32_t width, int32_t height) {
         const int32_t band = std::min(height, width * 9 / 16);
         const int32_t top = (height - band) / 2;

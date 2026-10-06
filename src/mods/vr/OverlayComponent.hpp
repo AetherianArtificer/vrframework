@@ -157,7 +157,7 @@ private:
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_wrist_quad(int slot);
         // Fullscreen menus: a curved panel in front, inside a room made of the menu's own blurred image, both placed
         // where the head looks when the menu opens. Back to front; empty when not shown.
-        std::array<XrCompositionLayerBaseHeader*, 2> generate_menu_layers(bool flat, bool room_ready);
+        std::array<XrCompositionLayerBaseHeader*, 4> generate_menu_layers(bool flat, bool room_ready);
         
     private:
         XrCompositionLayerQuad m_slate_layer{};
@@ -169,6 +169,8 @@ private:
         XrCompositionLayerQuad m_wrist_layers[2]{};
         XrCompositionLayerCylinderKHR m_menu_panel{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
         XrCompositionLayerCylinderKHR m_menu_room{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
+        XrCompositionLayerQuad m_menu_floor{XR_TYPE_COMPOSITION_LAYER_QUAD};
+        XrCompositionLayerQuad m_menu_ceiling{XR_TYPE_COMPOSITION_LAYER_QUAD};
         bool m_menu_placed{false};
         float m_menu_yaw{0.0f};
         glm::vec3 m_menu_position{};
