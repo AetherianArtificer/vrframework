@@ -885,7 +885,7 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     return layer;
 }
 
-std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_menu_layers(bool flat, float ui_aspect) {
+std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_menu_layers(bool flat) {
     auto& vr = VR::get();
     std::array<XrCompositionLayerBaseHeader*, 2> layers{};
     if (!flat) {
@@ -897,7 +897,7 @@ std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_
         return layers;
     }
 
-    // Centred on the head where it looks when the menu opens, then fixed in the room.
+    // Centred on the head where it looks when the menu opens, then fixed in place.
     if (!m_menu_placed) {
         const auto head = glm::mat4{vr->get_transform(0)};
         const auto forward = -glm::vec3{head[2]};
@@ -908,15 +908,8 @@ std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_
     auto pose = glm::rotate(glm::mat4{1.0f}, m_menu_yaw, glm::vec3{0.0f, 1.0f, 0.0f});
     pose[3] = glm::vec4{m_menu_position, 1.0f};
     pose = glm::inverse(vr->get_transform_offset()) * pose;
-    const auto orientation = runtimes::OpenXR::to_openxr(glm::normalize(glm::quat_cast(pose)));
-    const auto position = runtimes::OpenXR::to_openxr(pose[3]);
 
-    int count = 0;
-    // The menu at a size that reads without turning the head; with its UI on a layer of its own, the scene sits
-    // further back at the same angular size.
-    const float kMenuAngle = glm::radians(75.0f);
-    const auto& ui_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI];
-    const bool separate_ui = ui_aspect > 0.0f && ui_swapchain.handle != XR_NULL_HANDLE;
+    // The menu's 16:9 band, at a size that reads without turning the head.
     const auto band = VR::menu_band((int32_t)eye.width, (int32_t)eye.height);
     auto& panel = m_menu_panel;
     panel = {XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
@@ -925,35 +918,12 @@ std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_
     panel.subImage.swapchain = eye.handle;
     panel.subImage.imageRect.offset = {band[0], band[1]};
     panel.subImage.imageRect.extent = {band[2] - band[0], band[3] - band[1]};
-    panel.pose.orientation = orientation;
-    panel.pose.position = position;
-    // Far enough behind the UI that the two read as separate depths.
-    panel.radius = separate_ui ? 8.0f : 3.0f;
-    panel.centralAngle = kMenuAngle;
+    panel.pose.orientation = runtimes::OpenXR::to_openxr(glm::normalize(glm::quat_cast(pose)));
+    panel.pose.position = runtimes::OpenXR::to_openxr(pose[3]);
+    panel.radius = 3.0f;
+    panel.centralAngle = glm::radians(75.0f);
     panel.aspectRatio = (float)(band[2] - band[0]) / (float)(band[3] - band[1]);
-    layers[count++] = (XrCompositionLayerBaseHeader*)&panel;
-
-    if (separate_ui) {
-        auto& ui = m_menu_ui;
-        ui = {XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
-        ui.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-        ui.space = vr->m_openxr->stage_space;
-        ui.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-        ui.subImage.swapchain = ui_swapchain.handle;
-        ui.subImage.imageRect.offset = {0, 0};
-        ui.subImage.imageRect.extent = {(int32_t)ui_swapchain.width, (int32_t)ui_swapchain.height};
-        ui.pose.orientation = orientation;
-        ui.pose.position = position;
-        ui.radius = 1.8f;
-        ui.centralAngle = kMenuAngle;
-        ui.aspectRatio = ui_aspect;
-        layers[count++] = (XrCompositionLayerBaseHeader*)&ui;
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            spdlog::info("[VR] Menu UI shown on its own layer in front of the menu's scene");
-        }
-    }
+    layers[0] = (XrCompositionLayerBaseHeader*)&panel;
     return layers;
 }
 

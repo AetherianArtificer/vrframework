@@ -69,8 +69,6 @@ private:
     // The HUD for the world panel, drawn at the panel swapchain's size.
     d3d12::TextureContext m_native_hud_target{};
     d3d12::TextureContext m_native_wrist_target{};
-    // The menu UI's width over height while a fullscreen menu's UI is on its own layer, otherwise zero.
-    float m_menu_ui_aspect{0.0f};
     bool m_native_wrist_ready{false};
     bool m_native_hud_ready{false};
     std::array<d3d12::TextureContext, 2> m_native_eye{};

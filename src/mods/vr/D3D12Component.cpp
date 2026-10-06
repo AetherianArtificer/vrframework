@@ -97,8 +97,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
         }
 
-        const bool menu_ui = m_native_hud_ready && m_menu_ui_aspect > 0.0f && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI);
-        vr->m_openxr->flat_layers = openxr_overlay.generate_menu_layers(vr->is_presented_frame_flat(), menu_ui ? m_menu_ui_aspect : 0.0f);
+        vr->m_openxr->flat_layers = openxr_overlay.generate_menu_layers(vr->is_presented_frame_flat());
         auto result = vr->m_openxr->end_frame(quad_layers, vr->m_presenter_frame_count);
         if (result == XR_ERROR_LAYER_INVALID) {
             spdlog::info("[VR] Attempting to correct invalid layer");
@@ -257,15 +256,13 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     commands.wait(INFINITE);
     commands.copy(backbuffer, m_native_source.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT);
 
-    // Each eye shows its own captured image, or the whole back buffer when it has none. A fullscreen menu shows its
-    // scene without the UI, which goes on a layer of its own in front.
+    // Each eye shows its own captured image, or the whole back buffer when it has none.
     std::array<bool, 2> captured{};
     const bool menu = mono && vr->is_presented_frame_flat();
-    const auto menu_scene = menu ? vr->get_native_menu_scene() : nullptr;
-    if (!mono || menu_scene != nullptr) {
+    if (!mono) {
         auto device = g_framework->get_d3d12_hook()->get_device();
         for (uint32_t eye = 0; eye < 2; ++eye) {
-            auto source = mono ? menu_scene : vr->get_native_eye_source(eye);
+            auto source = vr->get_native_eye_source(eye);
             if (source == nullptr) {
                 continue;
             }
@@ -294,7 +291,7 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     }
 
     bool ui_ready = false;
-    if ((!mono || menu_scene != nullptr) && (captured[0] || captured[1])) {
+    if (!mono && (captured[0] || captured[1])) {
         if (auto ui = vr->get_native_ui_source(); ui != nullptr) {
             if (m_native_ui_resource != ui.Get() || m_native_ui.texture == nullptr) {
                 m_native_ui.reset();
@@ -337,23 +334,13 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
 
         m_native_copy_batch->SetViewport(viewport);
         m_native_copy_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
-        RECT dest{ 0, 0, (LONG)dst_desc.Width, (LONG)dst_desc.Height };
-        if (captured[eye] && menu) {
-            // The menu's scene fills the band the menu UI is drawn in; outside it stays black.
-            const float clear_black[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
-            command_list->ClearRenderTargetView(rtv, clear_black, 0, nullptr);
-            const auto scene_desc = m_native_capture[eye].texture->GetDesc();
-            if ((float)scene_desc.Width / (float)scene_desc.Height > 1.3f) {
-                const auto band = VR::menu_band((int32_t)dst_desc.Width, (int32_t)dst_desc.Height);
-                dest = RECT{ band[0], band[1], band[2], band[3] };
-            }
-        }
+        const RECT dest{ 0, 0, (LONG)dst_desc.Width, (LONG)dst_desc.Height };
         if (captured[eye]) {
             // Within a few pixels of the eye's size the image is copied pixel for pixel; resampling it blurs the whole eye.
             const auto capture_desc = m_native_capture[eye].texture->GetDesc();
             const LONG capture_width = (LONG)capture_desc.Width;
             const LONG capture_height = (LONG)capture_desc.Height;
-            const bool same_size = !menu && std::abs(capture_width - dest.right) <= 16 && std::abs(capture_height - dest.bottom) <= 16;
+            const bool same_size = std::abs(capture_width - dest.right) <= 16 && std::abs(capture_height - dest.bottom) <= 16;
             const RECT exact{ 0, 0, std::min(capture_width, dest.right), std::min(capture_height, dest.bottom) };
             if (same_size) {
                 m_native_copy_batch->Draw(view.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)capture_width, (uint32_t)capture_height }, exact, &exact, DirectX::Colors::White);
@@ -371,7 +358,7 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         const bool comfort = m_vignette_srv_heap != nullptr && (vignette > 0.01f || fade > 0.01f);
 
         // The UI layer, shifted toward the nose in each eye so the HUD sits a couple of metres away instead of at infinity.
-        if (ui_ready && captured[eye] && !menu && !vr->is_native_hud_panel()) {
+        if (ui_ready && captured[eye] && !vr->is_native_hud_panel()) {
             const auto ui_desc = m_native_ui.texture->GetDesc();
             const LONG shift = (LONG)(dest.right * 0.006f) * (eye == 0 ? 1 : -1);
             const RECT ui_dest{ dest.left + shift, dest.top, dest.right + shift, dest.bottom };
@@ -409,10 +396,9 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         command_list->ResourceBarrier(2, barriers);
     }
     m_native_hud_ready = false;
-    m_menu_ui_aspect = 0.0f;
     const auto wrist_panels = vr->get_native_wrist_panels();
     const bool wrists = wrist_panels[0].hand >= 0 || wrist_panels[1].hand >= 0;
-    if (ui_ready && (vr->is_native_hud_panel() || wrists || menu)) {
+    if (ui_ready && (vr->is_native_hud_panel() || wrists)) {
         const auto& panel_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI];
         auto& target = m_native_hud_target;
         if (panel_swapchain.width > 0 && (target.texture == nullptr || target.texture->GetDesc().Width != (UINT64)panel_swapchain.width ||
@@ -452,7 +438,7 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
             D3D12_RECT cut[VR::kWristPanels]{};
             UINT cuts = 0;
             for (const auto& wrist : wrist_panels) {
-                if (wrist.hand >= 0 && !menu) {
+                if (wrist.hand >= 0) {
                     cut[cuts++] = { (LONG)(wrist.rect[0] * target_desc.Width), (LONG)(wrist.rect[1] * target_desc.Height), (LONG)(wrist.rect[2] * target_desc.Width),
                                     (LONG)(wrist.rect[3] * target_desc.Height) };
                 }
@@ -463,7 +449,6 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
             const auto to_srv = CD3DX12_RESOURCE_BARRIER::Transition(target.texture.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             command_list->ResourceBarrier(1, &to_srv);
             m_native_hud_ready = true;
-            m_menu_ui_aspect = menu ? (float)ui_desc.Width / (float)ui_desc.Height : 0.0f;
         }
     }
 
@@ -533,23 +518,27 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     }
 
     // The images each eye of the headset receives, next to the back buffer capture.
-    if (menu && m_native_hud_ready) {
+    // A fullscreen menu's parts as the game gives them: its UI layer, its scene without the UI, and the finished image.
+    if (menu) {
         if (const auto path = vr->take_menu_dump_request(); !path.empty()) {
             auto command_queue = g_framework->get_d3d12_hook()->get_command_queue();
-            auto named = [&](const wchar_t* suffix) {
+            auto save = [&](ID3D12Resource* texture, const std::wstring& suffix) {
+                const auto name = utility::narrow(suffix.substr(1));
+                if (texture == nullptr) {
+                    spdlog::info("[VR] Menu {} not available to save", name);
+                    return;
+                }
                 auto p = path;
                 const auto dot = p.rfind(L'.');
                 p.insert(dot == std::wstring::npos ? p.size() : dot, suffix);
-                return p;
+                const auto desc = texture->GetDesc();
+                const auto hr = DirectX::SaveWICTextureToFile(command_queue, texture, GUID_ContainerFormatPng, p.c_str(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                                                              D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                spdlog::info("[VR] Menu {} {}x{} saved to {} (hr {:x})", name, desc.Width, desc.Height, utility::narrow(p), (uint32_t)hr);
             };
-            const auto ui_path = named(L"_ui");
-            const auto scene_path = named(L"_scene");
-            const auto ui_hr = DirectX::SaveWICTextureToFile(command_queue, m_native_hud_target.texture.Get(), GUID_ContainerFormatPng, ui_path.c_str(),
-                                                             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            const auto scene_hr = DirectX::SaveWICTextureToFile(command_queue, m_native_eye[0].texture.Get(), GUID_ContainerFormatPng, scene_path.c_str(),
-                                                                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            spdlog::info("[VR] Menu UI layer saved to {} (hr {:x}), its scene to {} (hr {:x})", utility::narrow(ui_path), (uint32_t)ui_hr, utility::narrow(scene_path),
-                         (uint32_t)scene_hr);
+            save(vr->get_native_ui_source().Get(), L"_ui");
+            save(vr->get_native_menu_scene().Get(), L"_scene");
+            save(m_native_eye[0].texture.Get(), L"_full");
         }
     }
 
