@@ -432,14 +432,21 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
             const RECT dest{ 0, 0, (LONG)target_desc.Width, (LONG)target_desc.Height };
             m_native_copy_batch->Draw(m_native_ui.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)ui_desc.Width, (uint32_t)ui_desc.Height }, dest, DirectX::Colors::White);
             m_native_copy_batch->End();
-            // The parts shown on the wrists are cut out of the panel.
-            D3D12_RECT cut[VR::kWristPanels]{};
+            // The parts shown on the wrists, and any others asked for, are cut out of the panel.
+            D3D12_RECT cut[VR::kWristPanels + VR::kHudCuts]{};
             UINT cuts = 0;
+            auto add_cut = [&](const std::array<float, 4>& r) {
+                if (r[2] > r[0] && r[3] > r[1]) {
+                    cut[cuts++] = { (LONG)(r[0] * target_desc.Width), (LONG)(r[1] * target_desc.Height), (LONG)(r[2] * target_desc.Width), (LONG)(r[3] * target_desc.Height) };
+                }
+            };
             for (const auto& wrist : wrist_panels) {
                 if (wrist.hand >= 0) {
-                    cut[cuts++] = { (LONG)(wrist.rect[0] * target_desc.Width), (LONG)(wrist.rect[1] * target_desc.Height), (LONG)(wrist.rect[2] * target_desc.Width),
-                                    (LONG)(wrist.rect[3] * target_desc.Height) };
+                    add_cut(wrist.rect);
                 }
+            }
+            for (const auto& extra : vr->get_native_hud_cuts()) {
+                add_cut(extra);
             }
             if (cuts > 0) {
                 command_list->ClearRenderTargetView(rtv, clear, cuts, cut);
