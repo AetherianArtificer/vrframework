@@ -885,15 +885,16 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     return layer;
 }
 
-std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComponent::OpenXR::generate_menu_cylinder(bool flat) {
+std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_menu_layers(bool flat, bool room_ready) {
     auto& vr = VR::get();
+    std::array<XrCompositionLayerBaseHeader*, 2> layers{};
     if (!flat) {
         m_menu_placed = false;
-        return std::nullopt;
+        return layers;
     }
-    const auto& swapchain = vr->m_openxr->swapchains[0];
-    if (!vr->m_openxr->is_cylinder_layer_allowed() || swapchain.handle == XR_NULL_HANDLE || swapchain.width == 0 || swapchain.height == 0) {
-        return std::nullopt;
+    const auto& eye = vr->m_openxr->swapchains[0];
+    if (!vr->m_openxr->is_cylinder_layer_allowed() || eye.handle == XR_NULL_HANDLE || eye.width == 0 || eye.height == 0) {
+        return layers;
     }
 
     // Centred on the head where it looks when the menu opens, then fixed in the room.
@@ -907,22 +908,45 @@ std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComp
     auto pose = glm::rotate(glm::mat4{1.0f}, m_menu_yaw, glm::vec3{0.0f, 1.0f, 0.0f});
     pose[3] = glm::vec4{m_menu_position, 1.0f};
     pose = glm::inverse(vr->get_transform_offset()) * pose;
+    const auto orientation = runtimes::OpenXR::to_openxr(glm::normalize(glm::quat_cast(pose)));
+    const auto position = runtimes::OpenXR::to_openxr(pose[3]);
 
-    auto& layer = m_menu_cylinder;
-    layer = {XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
-    layer.layerFlags = 0;
-    layer.space = vr->m_openxr->stage_space;
-    layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    layer.subImage.swapchain = swapchain.handle;
-    layer.subImage.imageRect.offset = {0, 0};
-    layer.subImage.imageRect.extent = {(int32_t)swapchain.width, (int32_t)swapchain.height};
-    layer.subImage.imageArrayIndex = 0;
-    layer.pose.orientation = runtimes::OpenXR::to_openxr(glm::normalize(glm::quat_cast(pose)));
-    layer.pose.position = runtimes::OpenXR::to_openxr(pose[3]);
-    layer.radius = 2.5f;
-    layer.centralAngle = glm::radians(135.0f);
-    layer.aspectRatio = (float)swapchain.width / (float)swapchain.height;
-    return layer;
+    int count = 0;
+    const auto& room_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::MENU_ROOM];
+    if (room_ready && room_swapchain.handle != XR_NULL_HANDLE) {
+        // All the way round, far enough to read as surroundings, tall enough to reach well above and below the eyes.
+        auto& room = m_menu_room;
+        room = {XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
+        room.space = vr->m_openxr->stage_space;
+        room.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        room.subImage.swapchain = room_swapchain.handle;
+        room.subImage.imageRect.offset = {0, 0};
+        room.subImage.imageRect.extent = {(int32_t)room_swapchain.width, (int32_t)room_swapchain.height};
+        room.pose.orientation = orientation;
+        room.pose.position = position;
+        room.radius = 8.0f;
+        room.centralAngle = glm::two_pi<float>();
+        const float height = 2.0f * room.radius * std::tan(glm::radians(65.0f));
+        room.aspectRatio = room.radius * room.centralAngle / height;
+        layers[count++] = (XrCompositionLayerBaseHeader*)&room;
+    }
+
+    // The menu at a size that reads without turning the head.
+    const auto band = VR::menu_band((int32_t)eye.width, (int32_t)eye.height);
+    auto& panel = m_menu_panel;
+    panel = {XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
+    panel.space = vr->m_openxr->stage_space;
+    panel.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    panel.subImage.swapchain = eye.handle;
+    panel.subImage.imageRect.offset = {band[0], band[1]};
+    panel.subImage.imageRect.extent = {band[2] - band[0], band[3] - band[1]};
+    panel.pose.orientation = orientation;
+    panel.pose.position = position;
+    panel.radius = 3.0f;
+    panel.centralAngle = glm::radians(75.0f);
+    panel.aspectRatio = (float)(band[2] - band[0]) / (float)(band[3] - band[1]);
+    layers[count++] = (XrCompositionLayerBaseHeader*)&panel;
+    return layers;
 }
 
 std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::OpenXR::generate_framework_ui_quad() {

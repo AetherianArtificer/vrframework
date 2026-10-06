@@ -214,6 +214,15 @@ public:
     static constexpr int kWristPanels = 2;
     static constexpr int kWristImageWidth = 1024;
     static constexpr int kWristImageHeight = 512;
+    // Fullscreen menus are drawn in a centred 16:9 band of the eye image; the room around them is that band blurred,
+    // side by side with its mirror image so it wraps all the way round without a seam.
+    static constexpr int kMenuRoomWidth = 128;
+    static constexpr int kMenuRoomHeight = 64;
+    static std::array<int32_t, 4> menu_band(int32_t width, int32_t height) {
+        const int32_t band = std::min(height, width * 9 / 16);
+        const int32_t top = (height - band) / 2;
+        return { 0, top, width, top + band };
+    }
     void set_native_wrist_panels(const std::array<WristPanel, kWristPanels>& panels) {
         std::scoped_lock _{ m_wrist_mtx };
         m_wrist_panels = panels;
