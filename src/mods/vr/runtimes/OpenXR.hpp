@@ -26,7 +26,8 @@ struct OpenXR final : public VRRuntime {
         AFR_DEPTH_RIGHT_EYE = 3,
         FRAMEWORK_UI = 4,
         GAME_UI = 5,
-        END = 6,
+        WRIST_UI = 6,
+        END = 7,
     };
 
     OpenXR() {

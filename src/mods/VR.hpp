@@ -204,22 +204,35 @@ public:
     }
     bool is_native_hud_panel() const { return m_native_hud_panel; }
 
-    // A part of the HUD shown on a wrist like a watch: the hand (-1 none, 0 left, 1 right), the part's rectangle in the
-    // HUD image as fractions, and its width on the wrist in metres.
-    void set_native_wrist_panel(int hand, float left, float top, float right, float bottom, float width) {
-        std::scoped_lock _{ m_wrist_mtx };
-        m_wrist_hand = hand;
-        m_wrist_rect = { left, top, right, bottom };
-        m_wrist_width = width;
-    }
+    // Parts of the HUD shown on the wrists like watches, each with its hand (-1 none, 0 left, 1 right), its rectangle in
+    // the HUD image as fractions, and its width on the wrist in metres. They are cut out of the floating HUD panel.
     struct WristPanel {
         int hand{ -1 };
         std::array<float, 4> rect{};
         float width{ 0.0f };
     };
-    WristPanel get_native_wrist_panel() const {
+    static constexpr int kWristPanels = 2;
+    static constexpr int kWristImageWidth = 1024;
+    static constexpr int kWristImageHeight = 512;
+    void set_native_wrist_panels(const std::array<WristPanel, kWristPanels>& panels) {
         std::scoped_lock _{ m_wrist_mtx };
-        return { m_wrist_hand, m_wrist_rect, m_wrist_width };
+        m_wrist_panels = panels;
+    }
+    std::array<WristPanel, kWristPanels> get_native_wrist_panels() const {
+        std::scoped_lock _{ m_wrist_mtx };
+        return m_wrist_panels;
+    }
+    bool has_native_wrist_panels() const {
+        std::scoped_lock _{ m_wrist_mtx };
+        return m_wrist_panels[0].hand >= 0 || m_wrist_panels[1].hand >= 0;
+    }
+    // A panel's place in the wrist image: its own half, the part fitted inside it at its aspect ratio.
+    static std::array<int32_t, 4> wrist_slot(int slot, float part_width, float part_height) {
+        const float cell = (float)kWristImageWidth / kWristPanels;
+        const float scale = std::min(cell / std::max(part_width, 1.0f), (float)kWristImageHeight / std::max(part_height, 1.0f));
+        const int32_t w = (int32_t)(part_width * scale);
+        const int32_t h = (int32_t)(part_height * scale);
+        return { (int32_t)(slot * cell), 0, (int32_t)(slot * cell) + w, h };
     }
     float get_native_hud_panel_width() const { return m_native_hud_panel_width; }
     float get_native_hud_panel_distance() const { return m_native_hud_panel_distance; }
@@ -707,9 +720,7 @@ public:
     std::atomic<float> m_native_hud_panel_width{2.0f};
     std::atomic<float> m_native_hud_panel_distance{2.0f};
     mutable std::mutex m_wrist_mtx{};
-    int m_wrist_hand{ -1 };
-    std::array<float, 4> m_wrist_rect{};
-    float m_wrist_width{ 0.0f };
+    std::array<WristPanel, kWristPanels> m_wrist_panels{};
     std::mutex m_eye_source_mutex{};
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> m_native_eye_sources{};
     std::array<int64_t, 2> m_native_eye_source_frames{ -100, -100 };

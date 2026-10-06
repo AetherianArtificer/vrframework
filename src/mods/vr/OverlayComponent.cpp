@@ -832,29 +832,30 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     return layer;
 }
 
-std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::OpenXR::generate_wrist_quad() {
+std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::OpenXR::generate_wrist_quad(int slot) {
     auto& vr = VR::get();
-    const auto wrist = vr->get_native_wrist_panel();
-    const auto& swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI];
-    if (wrist.hand < 0 || swapchain.handle == XR_NULL_HANDLE || swapchain.width == 0 || swapchain.height == 0) {
-        m_wrist_shown = false;
+    const auto wrist = vr->get_native_wrist_panels()[slot];
+    const auto& hud = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI];
+    const auto& swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::WRIST_UI];
+    if (wrist.hand < 0 || swapchain.handle == XR_NULL_HANDLE || hud.width == 0 || hud.height == 0) {
+        m_wrist_shown[slot] = false;
         return std::nullopt;
     }
 
-    // On the back of the wrist, facing out of the back of the hand, the top of the image toward the fingers.
+    // On the back of the wrist behind the hand, facing out of the back of the hand, the top of the image toward the fingers.
     const auto hand = glm::mat4{vr->get_transform(wrist.hand == 0 ? vr->get_left_controller_index() : vr->get_right_controller_index())};
     const float side = wrist.hand == 0 ? -1.0f : 1.0f;
     const glm::vec3 normal = glm::normalize(glm::vec3{hand * glm::vec4{side, 0.0f, 0.0f, 0.0f}});
     const glm::vec3 up = glm::normalize(glm::vec3{hand * glm::vec4{0.0f, 0.0f, -1.0f, 0.0f}});
     const glm::vec3 right = glm::normalize(glm::cross(up, normal));
-    const glm::vec3 position = glm::vec3{hand * glm::vec4{side * 0.035f, 0.0f, 0.09f, 1.0f}};
+    const glm::vec3 position = glm::vec3{hand * glm::vec4{side * 0.045f, 0.0f, 0.15f, 1.0f}};
 
     // Shown while the face is turned toward the eyes, like checking a watch.
     const auto head = glm::mat4{vr->get_transform(0)};
     const glm::vec3 to_head = glm::normalize(glm::vec3{head[3]} - position);
     const float facing = glm::dot(normal, to_head);
-    m_wrist_shown = facing > (m_wrist_shown ? 0.5f : 0.7f);
-    if (!m_wrist_shown) {
+    m_wrist_shown[slot] = facing > (m_wrist_shown[slot] ? 0.5f : 0.7f);
+    if (!m_wrist_shown[slot]) {
         return std::nullopt;
     }
 
@@ -865,25 +866,22 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     panel[3] = glm::vec4{position, 1.0f};
     panel = glm::inverse(vr->get_transform_offset()) * panel;
 
-    const int32_t x0 = (int32_t)(wrist.rect[0] * swapchain.width);
-    const int32_t y0 = (int32_t)(wrist.rect[1] * swapchain.height);
-    const int32_t x1 = (int32_t)(wrist.rect[2] * swapchain.width);
-    const int32_t y1 = (int32_t)(wrist.rect[3] * swapchain.height);
-    if (x1 <= x0 || y1 <= y0) {
+    const auto rect = VR::wrist_slot(slot, (wrist.rect[2] - wrist.rect[0]) * hud.width, (wrist.rect[3] - wrist.rect[1]) * hud.height);
+    if (rect[2] <= rect[0] || rect[3] <= rect[1]) {
         return std::nullopt;
     }
 
-    auto& layer = m_wrist_layer;
+    auto& layer = m_wrist_layers[slot];
     layer = {XR_TYPE_COMPOSITION_LAYER_QUAD};
     layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     layer.space = vr->m_openxr->stage_space;
     layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     layer.subImage.swapchain = swapchain.handle;
-    layer.subImage.imageRect.offset = {x0, y0};
-    layer.subImage.imageRect.extent = {x1 - x0, y1 - y0};
+    layer.subImage.imageRect.offset = {rect[0], rect[1]};
+    layer.subImage.imageRect.extent = {rect[2] - rect[0], rect[3] - rect[1]};
     layer.pose.orientation = runtimes::OpenXR::to_openxr(glm::normalize(glm::quat_cast(panel)));
     layer.pose.position = runtimes::OpenXR::to_openxr(panel[3]);
-    layer.size = {wrist.width, wrist.width * (float)(y1 - y0) / (float)(x1 - x0)};
+    layer.size = {wrist.width, wrist.width * (float)(rect[3] - rect[1]) / (float)(rect[2] - rect[0])};
     return layer;
 }
 

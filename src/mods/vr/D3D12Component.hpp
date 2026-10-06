@@ -68,6 +68,8 @@ private:
     ID3D12Resource* m_native_ui_resource{};
     // The HUD for the world panel, drawn at the panel swapchain's size.
     d3d12::TextureContext m_native_hud_target{};
+    d3d12::TextureContext m_native_wrist_target{};
+    bool m_native_wrist_ready{false};
     bool m_native_hud_ready{false};
     std::array<d3d12::TextureContext, 2> m_native_eye{};
     std::array<d3d12::ResourceCopier, 3> m_generic_copiers{};

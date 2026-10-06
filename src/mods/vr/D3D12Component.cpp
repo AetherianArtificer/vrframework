@@ -82,8 +82,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     quad_layers.push_back((XrCompositionLayerBaseHeader*)&hud_quad->get());
                 }
             }
-            if (const auto wrist_quad = openxr_overlay.generate_wrist_quad()) {
-                quad_layers.push_back((XrCompositionLayerBaseHeader*)&wrist_quad->get());
+        }
+        if (m_native_wrist_ready && !vr->is_presented_frame_flat() && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::WRIST_UI)) {
+            for (int slot = 0; slot < VR::kWristPanels; ++slot) {
+                if (const auto wrist_quad = openxr_overlay.generate_wrist_quad(slot)) {
+                    quad_layers.push_back((XrCompositionLayerBaseHeader*)&wrist_quad->get());
+                }
             }
         }
 
@@ -390,7 +394,9 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         command_list->ResourceBarrier(2, barriers);
     }
     m_native_hud_ready = false;
-    if (ui_ready && (vr->is_native_hud_panel() || vr->get_native_wrist_panel().hand >= 0)) {
+    const auto wrist_panels = vr->get_native_wrist_panels();
+    const bool wrists = wrist_panels[0].hand >= 0 || wrist_panels[1].hand >= 0;
+    if (ui_ready && (vr->is_native_hud_panel() || wrists)) {
         const auto& panel_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI];
         auto& target = m_native_hud_target;
         if (panel_swapchain.width > 0 && (target.texture == nullptr || target.texture->GetDesc().Width != (UINT64)panel_swapchain.width ||
@@ -426,9 +432,74 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
             const RECT dest{ 0, 0, (LONG)target_desc.Width, (LONG)target_desc.Height };
             m_native_copy_batch->Draw(m_native_ui.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)ui_desc.Width, (uint32_t)ui_desc.Height }, dest, DirectX::Colors::White);
             m_native_copy_batch->End();
+            // The parts shown on the wrists are cut out of the panel.
+            D3D12_RECT cut[VR::kWristPanels]{};
+            UINT cuts = 0;
+            for (const auto& wrist : wrist_panels) {
+                if (wrist.hand >= 0) {
+                    cut[cuts++] = { (LONG)(wrist.rect[0] * target_desc.Width), (LONG)(wrist.rect[1] * target_desc.Height), (LONG)(wrist.rect[2] * target_desc.Width),
+                                    (LONG)(wrist.rect[3] * target_desc.Height) };
+                }
+            }
+            if (cuts > 0) {
+                command_list->ClearRenderTargetView(rtv, clear, cuts, cut);
+            }
             const auto to_srv = CD3DX12_RESOURCE_BARRIER::Transition(target.texture.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             command_list->ResourceBarrier(1, &to_srv);
             m_native_hud_ready = true;
+        }
+    }
+
+    // The wrist parts, each fitted into its half of a small image of their own.
+    m_native_wrist_ready = false;
+    const auto& wrist_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::WRIST_UI];
+    if (ui_ready && wrists && wrist_swapchain.width > 0) {
+        auto& target = m_native_wrist_target;
+        if (target.texture == nullptr) {
+            auto device = g_framework->get_d3d12_hook()->get_device();
+            const CD3DX12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_DEFAULT };
+            auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, wrist_swapchain.width, wrist_swapchain.height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+            ComPtr<ID3D12Resource> texture{};
+            if (SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&texture)))) {
+                texture->SetName(L"Native stereo wrist panels");
+                if (!target.setup(device, texture.Get(), std::nullopt, std::nullopt, L"Native stereo wrist panels")) {
+                    target.reset();
+                }
+            }
+        }
+        if (target.texture != nullptr) {
+            const auto target_desc = target.texture->GetDesc();
+            const auto ui_desc = m_native_ui.texture->GetDesc();
+            const auto to_rt = CD3DX12_RESOURCE_BARRIER::Transition(target.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            command_list->ResourceBarrier(1, &to_rt);
+            const auto rtv = target.get_rtv();
+            const float clear[4]{ 0.0f, 0.0f, 0.0f, 0.0f };
+            command_list->ClearRenderTargetView(rtv, clear, 0, nullptr);
+            D3D12_VIEWPORT viewport{ 0.0f, 0.0f, (float)target_desc.Width, (float)target_desc.Height, D3D12_MIN_DEPTH, D3D12_MAX_DEPTH };
+            D3D12_RECT scissor{ 0, 0, (LONG)target_desc.Width, (LONG)target_desc.Height };
+            command_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+            command_list->RSSetViewports(1, &viewport);
+            command_list->RSSetScissorRects(1, &scissor);
+            ID3D12DescriptorHeap* ui_heaps[]{ m_native_ui.srv_heap->Heap() };
+            command_list->SetDescriptorHeaps(1, ui_heaps);
+            m_native_copy_batch->SetViewport(viewport);
+            m_native_copy_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
+            for (int slot = 0; slot < VR::kWristPanels; ++slot) {
+                const auto& wrist = wrist_panels[slot];
+                if (wrist.hand < 0) {
+                    continue;
+                }
+                const RECT source{ (LONG)(wrist.rect[0] * ui_desc.Width), (LONG)(wrist.rect[1] * ui_desc.Height), (LONG)(wrist.rect[2] * ui_desc.Width),
+                                   (LONG)(wrist.rect[3] * ui_desc.Height) };
+                const auto place = VR::wrist_slot(slot, (float)(source.right - source.left), (float)(source.bottom - source.top));
+                const RECT dest{ place[0], place[1], place[2], place[3] };
+                m_native_copy_batch->Draw(m_native_ui.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)ui_desc.Width, (uint32_t)ui_desc.Height }, dest, &source,
+                                          DirectX::Colors::White);
+            }
+            m_native_copy_batch->End();
+            const auto to_srv = CD3DX12_RESOURCE_BARRIER::Transition(target.texture.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            command_list->ResourceBarrier(1, &to_srv);
+            m_native_wrist_ready = true;
         }
     }
 
@@ -439,6 +510,9 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     }
     if (m_native_hud_ready) {
         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI, m_native_hud_target.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+    if (m_native_wrist_ready) {
+        m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::WRIST_UI, m_native_wrist_target.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
 
     // The images each eye of the headset receives, next to the back buffer capture.
@@ -667,6 +741,9 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
         return err;
     }
     if(auto err = create_swapchain((int)runtimes::OpenXR::SwapchainIndex::GAME_UI, (int)DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, backbuffer_desc.Width, backbuffer_desc.Height)) {
+        return err;
+    }
+    if(auto err = create_swapchain((int)runtimes::OpenXR::SwapchainIndex::WRIST_UI, (int)DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, VR::kWristImageWidth, VR::kWristImageHeight)) {
         return err;
     }
     this->last_resolution = {vr->get_hmd_width(), vr->get_hmd_height()};
