@@ -885,19 +885,19 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     return layer;
 }
 
-std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_menu_layers(bool flat) {
+std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_menu_layers(bool flat) {
     auto& vr = VR::get();
-    std::array<XrCompositionLayerBaseHeader*, 2> layers{};
+    std::array<XrCompositionLayerBaseHeader*, 5> layers{};
     if (!flat) {
         m_menu_placed = false;
         return layers;
     }
     const auto& eye = vr->m_openxr->swapchains[0];
-    if (!vr->m_openxr->is_cylinder_layer_allowed() || eye.handle == XR_NULL_HANDLE || eye.width == 0 || eye.height == 0) {
+    if (eye.handle == XR_NULL_HANDLE || eye.width == 0 || eye.height == 0) {
         return layers;
     }
 
-    // Centred on the head where it looks when the menu opens, then fixed in place.
+    // Facing the head where it looks when the menu opens, then fixed in place.
     if (!m_menu_placed) {
         const auto head = glm::mat4{vr->get_transform(0)};
         const auto forward = -glm::vec3{head[2]};
@@ -905,25 +905,54 @@ std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_
         m_menu_position = glm::vec3{head[3]};
         m_menu_placed = true;
     }
-    auto pose = glm::rotate(glm::mat4{1.0f}, m_menu_yaw, glm::vec3{0.0f, 1.0f, 0.0f});
-    pose[3] = glm::vec4{m_menu_position, 1.0f};
-    pose = glm::inverse(vr->get_transform_offset()) * pose;
+    const auto facing = glm::rotate(glm::mat4{1.0f}, m_menu_yaw, glm::vec3{0.0f, 1.0f, 0.0f});
+    const auto offset = glm::inverse(vr->get_transform_offset());
 
-    // The menu's 16:9 band, at a size that reads without turning the head.
+    // A quad at a distance from the head, its centre at (x, y) on a plane that far ahead, in the menu's frame.
+    auto quad = [&](XrCompositionLayerQuad& layer, const XrRect2Di& rect, float distance, float x, float y, float width, float height) {
+        auto pose = facing;
+        pose[3] = glm::vec4{m_menu_position + glm::vec3{facing * glm::vec4{x, y, -distance, 0.0f}}, 1.0f};
+        pose = offset * pose;
+        layer = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+        layer.space = vr->m_openxr->stage_space;
+        layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        layer.subImage.swapchain = eye.handle;
+        layer.subImage.imageRect = rect;
+        layer.pose.orientation = runtimes::OpenXR::to_openxr(glm::normalize(glm::quat_cast(pose)));
+        layer.pose.position = runtimes::OpenXR::to_openxr(pose[3]);
+        layer.size = {width, height};
+    };
+
+    // The menu's 16:9 band, 75 degrees wide at 3 m so it reads without turning the head.
+    constexpr float kPanelDistance = 3.0f;
     const auto band = VR::menu_band((int32_t)eye.width, (int32_t)eye.height);
-    auto& panel = m_menu_panel;
-    panel = {XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
-    panel.space = vr->m_openxr->stage_space;
-    panel.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    panel.subImage.swapchain = eye.handle;
-    panel.subImage.imageRect.offset = {band[0], band[1]};
-    panel.subImage.imageRect.extent = {band[2] - band[0], band[3] - band[1]};
-    panel.pose.orientation = runtimes::OpenXR::to_openxr(glm::normalize(glm::quat_cast(pose)));
-    panel.pose.position = runtimes::OpenXR::to_openxr(pose[3]);
-    panel.radius = 3.0f;
-    panel.centralAngle = glm::radians(75.0f);
-    panel.aspectRatio = (float)(band[2] - band[0]) / (float)(band[3] - band[1]);
-    layers[0] = (XrCompositionLayerBaseHeader*)&panel;
+    const float band_w = (float)(band[2] - band[0]);
+    const float band_h = (float)(band[3] - band[1]);
+    const float panel_width = 2.0f * kPanelDistance * std::tan(glm::radians(37.5f));
+    const float panel_height = panel_width * band_h / band_w;
+    quad(m_menu_panel, XrRect2Di{{band[0], band[1]}, {band[2] - band[0], band[3] - band[1]}}, kPanelDistance, 0.0f, 0.0f, panel_width, panel_height);
+    layers[0] = (XrCompositionLayerBaseHeader*)&m_menu_panel;
+
+    // Floating regions: scaled toward the head along the lines through their place on the panel, so from where the
+    // head was when the menu opened each covers its place exactly and stands out from it in depth.
+    constexpr float kFloatDistance = 1.6f;
+    const float scale = kFloatDistance / kPanelDistance;
+    int count = 1;
+    const auto floats = vr->get_menu_floats();
+    for (size_t i = 0; i < floats.size(); ++i) {
+        const auto& r = floats[i];
+        if (r[2] <= r[0] || r[3] <= r[1]) {
+            continue;
+        }
+        const int32_t x0 = band[0] + (int32_t)(r[0] * band_w);
+        const int32_t y0 = band[1] + (int32_t)(r[1] * band_h);
+        const int32_t x1 = band[0] + (int32_t)(r[2] * band_w);
+        const int32_t y1 = band[1] + (int32_t)(r[3] * band_h);
+        const float x = ((r[0] + r[2]) * 0.5f - 0.5f) * panel_width * scale;
+        const float y = (0.5f - (r[1] + r[3]) * 0.5f) * panel_height * scale;
+        quad(m_menu_floats[i], XrRect2Di{{x0, y0}, {x1 - x0, y1 - y0}}, kFloatDistance, x, y, (r[2] - r[0]) * panel_width * scale, (r[3] - r[1]) * panel_height * scale);
+        layers[count++] = (XrCompositionLayerBaseHeader*)&m_menu_floats[i];
+    }
     return layers;
 }
 

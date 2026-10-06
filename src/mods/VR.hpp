@@ -227,6 +227,17 @@ public:
     static constexpr int kWristPanels = 2;
     static constexpr int kWristImageWidth = 1024;
     static constexpr int kWristImageHeight = 512;
+    // Regions of a fullscreen menu, as fractions of its 16:9 band (left, top, right, bottom), shown again on panels of
+    // their own nearer the player, at the same angles as on the menu panel.
+    static constexpr int kMenuFloats = 4;
+    void set_menu_floats(const std::array<std::array<float, 4>, kMenuFloats>& floats) {
+        std::scoped_lock _{ m_wrist_mtx };
+        m_menu_floats = floats;
+    }
+    std::array<std::array<float, 4>, kMenuFloats> get_menu_floats() const {
+        std::scoped_lock _{ m_wrist_mtx };
+        return m_menu_floats;
+    }
     // Fullscreen menus are drawn in a centred 16:9 band of the eye image.
     static std::array<int32_t, 4> menu_band(int32_t width, int32_t height) {
         const int32_t band = std::min(height, width * 9 / 16);
@@ -749,6 +760,7 @@ public:
     std::atomic<float> m_native_hud_panel_distance{2.0f};
     mutable std::mutex m_wrist_mtx{};
     std::array<WristPanel, kWristPanels> m_wrist_panels{};
+    std::array<std::array<float, 4>, kMenuFloats> m_menu_floats{};
     std::wstring m_menu_dump_path{};
     Microsoft::WRL::ComPtr<ID3D12Resource> m_native_menu_scene{};
     int m_native_menu_scene_frame{ -100 };
