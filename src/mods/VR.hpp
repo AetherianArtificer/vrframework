@@ -229,6 +229,8 @@ public:
     static constexpr int kWristImageHeight = 512;
     // Fullscreen menus are drawn in a centred 16:9 band of the eye image. The room around them is coloured from that
     // band: one small image holds the walls' gradient, the floor and the ceiling, each in its own column of cells.
+    void set_menu_room(bool enabled) { m_menu_room_enabled = enabled; }
+    bool is_menu_room() const { return m_menu_room_enabled; }
     static constexpr int kMenuRoomWidth = 224;
     static constexpr int kMenuRoomHeight = 64;
     static constexpr std::array<int32_t, 4> kMenuRoomWalls{ 0, 0, 32, 64 };
@@ -746,6 +748,7 @@ public:
     std::atomic<float> m_native_hud_panel_distance{2.0f};
     mutable std::mutex m_wrist_mtx{};
     std::array<WristPanel, kWristPanels> m_wrist_panels{};
+    std::atomic<bool> m_menu_room_enabled{ true };
     Microsoft::WRL::ComPtr<ID3D12Resource> m_native_menu_scene{};
     int m_native_menu_scene_frame{ -100 };
     std::mutex m_eye_source_mutex{};

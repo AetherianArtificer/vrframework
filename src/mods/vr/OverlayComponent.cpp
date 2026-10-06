@@ -914,9 +914,13 @@ std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_
     int count = 0;
     const auto& room_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::MENU_ROOM];
     if (room_ready && room_swapchain.handle != XR_NULL_HANDLE) {
-        // A round room on the play space's floor, walls 7 m away, ceiling 3.2 m up.
+        // A round room with its floor below the eyes and its ceiling above them, walls 7 m away. The play space's
+        // origin is not always on the floor, so the room is placed from the head.
         constexpr float kRadius = 7.0f;
-        constexpr float kHeight = 3.2f;
+        constexpr float kBelowEyes = 1.4f;
+        constexpr float kAboveEyes = 1.8f;
+        const float floor_y = position.y - kBelowEyes;
+        const float ceiling_y = position.y + kAboveEyes;
         auto cell = [&](const std::array<int32_t, 4>& r) {
             XrSwapchainSubImage image{};
             image.swapchain = room_swapchain.handle;
@@ -930,10 +934,10 @@ std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_
         walls.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
         walls.subImage = cell(VR::kMenuRoomWalls);
         walls.pose.orientation = orientation;
-        walls.pose.position = {position.x, kHeight * 0.5f, position.z};
+        walls.pose.position = {position.x, (floor_y + ceiling_y) * 0.5f, position.z};
         walls.radius = kRadius;
         walls.centralAngle = glm::two_pi<float>();
-        walls.aspectRatio = kRadius * walls.centralAngle / kHeight;
+        walls.aspectRatio = kRadius * walls.centralAngle / (ceiling_y - floor_y);
         layers[count++] = (XrCompositionLayerBaseHeader*)&walls;
 
         auto flat_quad = [&](XrCompositionLayerQuad& quad, const std::array<int32_t, 4>& r, float y, float pitch) {
@@ -946,8 +950,8 @@ std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_
             quad.size = {kRadius * 2.0f, kRadius * 2.0f};
             layers[count++] = (XrCompositionLayerBaseHeader*)&quad;
         };
-        flat_quad(m_menu_floor, VR::kMenuRoomFloor, 0.0f, -glm::half_pi<float>());
-        flat_quad(m_menu_ceiling, VR::kMenuRoomCeiling, kHeight, glm::half_pi<float>());
+        flat_quad(m_menu_floor, VR::kMenuRoomFloor, floor_y, -glm::half_pi<float>());
+        flat_quad(m_menu_ceiling, VR::kMenuRoomCeiling, ceiling_y, glm::half_pi<float>());
         static bool logged = false;
         if (!logged) {
             logged = true;

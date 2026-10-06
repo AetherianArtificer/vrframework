@@ -473,7 +473,7 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
     // toward their edges.
     m_menu_room_ready = false;
     const auto& room_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::MENU_ROOM];
-    if (menu && room_swapchain.width > 0 && ensure_menu_room_edge()) {
+    if (menu && vr->is_menu_room() && room_swapchain.width > 0 && ensure_menu_room_edge()) {
         auto device = g_framework->get_d3d12_hook()->get_device();
         auto make = [&](d3d12::TextureContext& ctx, uint32_t w, uint32_t h, const wchar_t* name) {
             if (ctx.texture != nullptr && ctx.texture->GetDesc().Width == w && ctx.texture->GetDesc().Height == h) {
