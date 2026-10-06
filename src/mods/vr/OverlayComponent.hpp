@@ -154,6 +154,7 @@ private:
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_framework_ui_quad();
         // The game's HUD on a panel that stays in front of the player and recentres after a larger turn.
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_game_ui_quad();
+        std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_wrist_quad();
         
     private:
         XrCompositionLayerQuad m_slate_layer{};
@@ -162,6 +163,8 @@ private:
         XrCompositionLayerCylinderKHR m_slate_layer_cylinder_right{};
         XrCompositionLayerQuad m_framework_ui_layer{};
         XrCompositionLayerQuad m_game_ui_layer{};
+        XrCompositionLayerQuad m_wrist_layer{};
+        bool m_wrist_shown{false};
         float m_game_ui_yaw{0.0f};
         bool m_game_ui_placed{false};
         OverlayComponent* m_parent{ nullptr };

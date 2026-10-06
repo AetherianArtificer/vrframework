@@ -203,6 +203,24 @@ public:
         m_native_hud_panel_distance = distance;
     }
     bool is_native_hud_panel() const { return m_native_hud_panel; }
+
+    // A part of the HUD shown on a wrist like a watch: the hand (-1 none, 0 left, 1 right), the part's rectangle in the
+    // HUD image as fractions, and its width on the wrist in metres.
+    void set_native_wrist_panel(int hand, float left, float top, float right, float bottom, float width) {
+        std::scoped_lock _{ m_wrist_mtx };
+        m_wrist_hand = hand;
+        m_wrist_rect = { left, top, right, bottom };
+        m_wrist_width = width;
+    }
+    struct WristPanel {
+        int hand{ -1 };
+        std::array<float, 4> rect{};
+        float width{ 0.0f };
+    };
+    WristPanel get_native_wrist_panel() const {
+        std::scoped_lock _{ m_wrist_mtx };
+        return { m_wrist_hand, m_wrist_rect, m_wrist_width };
+    }
     float get_native_hud_panel_width() const { return m_native_hud_panel_width; }
     float get_native_hud_panel_distance() const { return m_native_hud_panel_distance; }
     // Null when the eye has not been captured in the last few frames.
@@ -688,6 +706,10 @@ public:
     std::atomic<bool> m_native_hud_panel{false};
     std::atomic<float> m_native_hud_panel_width{2.0f};
     std::atomic<float> m_native_hud_panel_distance{2.0f};
+    mutable std::mutex m_wrist_mtx{};
+    int m_wrist_hand{ -1 };
+    std::array<float, 4> m_wrist_rect{};
+    float m_wrist_width{ 0.0f };
     std::mutex m_eye_source_mutex{};
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> m_native_eye_sources{};
     std::array<int64_t, 2> m_native_eye_source_frames{ -100, -100 };

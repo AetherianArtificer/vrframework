@@ -77,8 +77,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         auto& openxr_overlay = vr->get_overlay_component().get_openxr();
 
         if (m_native_hud_ready && !vr->is_presented_frame_flat() && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI)) {
-            if (const auto hud_quad = openxr_overlay.generate_game_ui_quad()) {
-                quad_layers.push_back((XrCompositionLayerBaseHeader*)&hud_quad->get());
+            if (vr->is_native_hud_panel()) {
+                if (const auto hud_quad = openxr_overlay.generate_game_ui_quad()) {
+                    quad_layers.push_back((XrCompositionLayerBaseHeader*)&hud_quad->get());
+                }
+            }
+            if (const auto wrist_quad = openxr_overlay.generate_wrist_quad()) {
+                quad_layers.push_back((XrCompositionLayerBaseHeader*)&wrist_quad->get());
             }
         }
 
@@ -385,7 +390,7 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         command_list->ResourceBarrier(2, barriers);
     }
     m_native_hud_ready = false;
-    if (ui_ready && vr->is_native_hud_panel()) {
+    if (ui_ready && (vr->is_native_hud_panel() || vr->get_native_wrist_panel().hand >= 0)) {
         const auto& panel_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI];
         auto& target = m_native_hud_target;
         if (panel_swapchain.width > 0 && (target.texture == nullptr || target.texture->GetDesc().Width != (UINT64)panel_swapchain.width ||
