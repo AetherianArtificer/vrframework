@@ -813,6 +813,7 @@ void VR::recenter_view() {
     new_rotation_offset[3] = current_hmd_state[3];
     get_runtime()->recenter_view(new_rotation_offset);
     set_transform_offset(glm::inverse(new_rotation_offset));
+    m_recenter_count.fetch_add(1);
 }
 
 glm::quat VR::get_gui_rotation_offset() {

@@ -231,6 +231,8 @@ public:
     Matrix4x4f get_transform_offset();
     void set_transform_offset(const Matrix4x4f& offset);
     void recenter_view();
+    // Counts recenters, so code holding head-relative state can reset it.
+    uint32_t get_recenter_count() const { return m_recenter_count.load(); }
 
     glm::quat get_gui_rotation_offset();
     void set_gui_rotation_offset(const glm::quat& offset);
@@ -645,6 +647,7 @@ private:
 
     HANDLE m_present_finished_event{CreateEvent(nullptr, TRUE, FALSE, nullptr)};
     std::atomic<bool> m_pipelined_frames{true};
+    std::atomic<uint32_t> m_recenter_count{0};
 
     Vector4f m_raw_projections[2]{};
 

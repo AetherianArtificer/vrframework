@@ -32,9 +32,14 @@ VRRuntime::Error OpenXR::synchronize_frame(int frame) {
         }
     }
 
-    // The frame waited before must begin first. If the render thread never begins it, it stays the current frame.
+    // The frame waited before must begin first, on the render thread.
     if (this->frame_synced && WaitForSingleObject(this->frame_begun_event, 100) != WAIT_OBJECT_0) {
-        return VRRuntime::Error::SUCCESS;
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            spdlog::error("[VR] The previous frame did not begin within 100 ms; this frame is not waited");
+        }
+        return VRRuntime::Error::UNSPECIFIED;
     }
 
     // Not under the lock: the render thread begins and ends the previous frame meanwhile.
@@ -46,6 +51,10 @@ VRRuntime::Error OpenXR::synchronize_frame(int frame) {
     if (result != XR_SUCCESS) {
         spdlog::error("[VR] xrWaitFrame failed: {}", this->get_result_string(result));
         return (VRRuntime::Error)result;
+    }
+    // The session may have stopped while this thread waited.
+    if (!this->session_ready) {
+        return VRRuntime::Error::UNSPECIFIED;
     }
     this->pipeline_state.frame_state = state;
     this->got_first_sync = true;
@@ -236,8 +245,8 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
                     this->error = std::string{"xrBeginSessionFailed: "} + this->get_result_string(result);
                     spdlog::error("VR: xrBeginSession failed: {}", this->get_result_string(result));
                 } else {
+                    // The game thread waits for the first frame; waiting here, under sync_mtx, would invert the lock order.
                     this->session_ready = true;
-                    synchronize_frame(m_last_synchronized_frame);
                 }
             } else if (ev->state == XR_SESSION_STATE_LOSS_PENDING) {
                 spdlog::info("VR: XR_SESSION_STATE_LOSS_PENDING");
@@ -459,6 +468,8 @@ void OpenXR::destroy() {
         return;
     }
 
+    // After any frame wait in progress, in the same lock order as synchronize_frame.
+    std::scoped_lock wait_lock{wait_mtx};
     std::scoped_lock _{sync_mtx};
 
     if (this->session != nullptr) {

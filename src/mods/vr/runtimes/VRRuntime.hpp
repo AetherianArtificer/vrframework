@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 
 #include <cstdint>
 #include <string_view>
@@ -131,7 +132,7 @@ struct VRRuntime {
     bool got_first_valid_poses{false};
     bool got_first_sync{false};
     bool handle_pause{false};
-    bool wants_reset_origin{true};
+    std::atomic<bool> wants_reset_origin{true};
 
     std::optional<std::string> error{};
 
