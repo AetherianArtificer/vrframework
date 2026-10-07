@@ -230,6 +230,9 @@ public:
     // Regions of a fullscreen menu, as fractions of its 16:9 band (left, top, right, bottom), shown again on panels of
     // their own nearer the player, at the same angles as on the menu panel.
     static constexpr int kMenuFloats = 4;
+    // The floating regions' image: the menu's UI at its 1920x1080 stage size.
+    static constexpr int kMenuStageWidth = 1920;
+    static constexpr int kMenuStageHeight = 1080;
     void set_menu_floats(const std::array<std::array<float, 4>, kMenuFloats>& floats) {
         std::scoped_lock _{ m_wrist_mtx };
         m_menu_floats = floats;

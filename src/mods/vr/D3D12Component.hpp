@@ -69,7 +69,9 @@ private:
     // The HUD for the world panel, drawn at the panel swapchain's size.
     d3d12::TextureContext m_native_hud_target{};
     d3d12::TextureContext m_native_wrist_target{};
-    // A menu's floating regions are in the HUD panel's image this frame.
+    // A layered menu's UI without its floating regions, and the whole UI for the floating regions' image.
+    d3d12::TextureContext m_menu_ui_cut{};
+    d3d12::TextureContext m_menu_float_target{};
     bool m_menu_floats_ready{false};
     bool m_native_wrist_ready{false};
     bool m_native_hud_ready{false};

@@ -947,26 +947,26 @@ std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_
     constexpr float kFloatDistance = 1.6f;
     const float scale = kFloatDistance / kPanelDistance;
     int count = 1;
-    const auto& float_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI];
+    const auto& float_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::MENU_FLOAT];
     if (!floats_ready || float_swapchain.handle == XR_NULL_HANDLE) {
         return layers;
     }
-    const auto float_band = VR::menu_band((int32_t)float_swapchain.width, (int32_t)float_swapchain.height);
-    const float float_band_w = (float)(float_band[2] - float_band[0]);
-    const float float_band_h = (float)(float_band[3] - float_band[1]);
+    const float float_w = (float)float_swapchain.width;
+    const float float_h = (float)float_swapchain.height;
     const auto floats = vr->get_menu_floats();
     for (size_t i = 0; i < floats.size(); ++i) {
         const auto& r = floats[i];
         if (r[2] <= r[0] || r[3] <= r[1]) {
             continue;
         }
-        const int32_t x0 = float_band[0] + (int32_t)(r[0] * float_band_w);
-        const int32_t y0 = float_band[1] + (int32_t)(r[1] * float_band_h);
-        const int32_t x1 = float_band[0] + (int32_t)(r[2] * float_band_w);
-        const int32_t y1 = float_band[1] + (int32_t)(r[3] * float_band_h);
+        const int32_t x0 = (int32_t)(r[0] * float_w);
+        const int32_t y0 = (int32_t)(r[1] * float_h);
+        const int32_t x1 = (int32_t)(r[2] * float_w);
+        const int32_t y1 = (int32_t)(r[3] * float_h);
         const float x = ((r[0] + r[2]) * 0.5f - 0.5f) * panel_width * scale;
         const float y = (0.5f - (r[1] + r[3]) * 0.5f) * panel_height * scale;
         quad(m_menu_floats[i], float_swapchain.handle, XrRect2Di{{x0, y0}, {x1 - x0, y1 - y0}}, kFloatDistance, x, y, (r[2] - r[0]) * panel_width * scale, (r[3] - r[1]) * panel_height * scale);
+        m_menu_floats[i].layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
         layers[count++] = (XrCompositionLayerBaseHeader*)&m_menu_floats[i];
     }
     return layers;
