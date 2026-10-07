@@ -273,11 +273,6 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
         auto device = g_framework->get_d3d12_hook()->get_device();
         for (uint32_t eye = 0; eye < 2; ++eye) {
             auto source = mono ? menu_backdrop : vr->get_native_eye_source(eye);
-            if (menu_layers && vr->is_menu_scene_stereo()) {
-                if (auto eye_image = vr->get_native_eye_source(eye); eye_image != nullptr) {
-                    source = eye_image;
-                }
-            }
             if (source == nullptr) {
                 continue;
             }
