@@ -73,6 +73,12 @@ private:
     d3d12::TextureContext m_menu_ui_cut{};
     d3d12::TextureContext m_menu_float_target{};
     bool m_menu_floats_ready{false};
+    // Each floating region's UI sampled on a small grid and read back, to tell whether it has any transparency.
+    static constexpr UINT kCoverageSize = 8;
+    d3d12::TextureContext m_menu_coverage[4]{};
+    ComPtr<ID3D12Resource> m_menu_coverage_readback{};
+    bool m_menu_coverage_written{false};
+    std::array<bool, 4> m_menu_float_shown{};
     bool m_native_wrist_ready{false};
     bool m_native_hud_ready{false};
     std::array<d3d12::TextureContext, 2> m_native_eye{};

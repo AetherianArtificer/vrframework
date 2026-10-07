@@ -467,12 +467,45 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
                 command_list->ResourceBarrier(1, &to_srv);
             };
 
-            // The UI with the floating regions cleared to transparent.
+            // Which regions float, from the coverage read back from the previous frame (whose work has finished).
             const auto menu_floats = vr->get_menu_floats();
+            constexpr UINT kRowPitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
+            constexpr UINT kSlot = kRowPitch * kCoverageSize;
+            if (m_menu_coverage_readback == nullptr) {
+                D3D12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_READBACK };
+                auto desc = CD3DX12_RESOURCE_DESC::Buffer(kSlot * VR::kMenuFloats);
+                device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_menu_coverage_readback));
+            }
+            if (m_menu_coverage_written && m_menu_coverage_readback != nullptr) {
+                const uint8_t* mapped = nullptr;
+                D3D12_RANGE range{ 0, kSlot * VR::kMenuFloats };
+                if (SUCCEEDED(m_menu_coverage_readback->Map(0, &range, (void**)&mapped))) {
+                    for (int i = 0; i < VR::kMenuFloats; ++i) {
+                        bool transparent = false;
+                        for (UINT y = 0; y < kCoverageSize && !transparent; ++y) {
+                            for (UINT x = 0; x < kCoverageSize; ++x) {
+                                if (mapped[i * kSlot + y * kRowPitch + x * 4 + 3] < 240) {
+                                    transparent = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (transparent != m_menu_float_shown[i]) {
+                            spdlog::info("[VR] Menu floating region {} {}", i, transparent ? "floats" : "is opaque and stays on the panel");
+                        }
+                        m_menu_float_shown[i] = transparent;
+                    }
+                    const D3D12_RANGE nothing{ 0, 0 };
+                    m_menu_coverage_readback->Unmap(0, &nothing);
+                }
+            }
+
+            // The UI with the floating regions cleared to transparent.
             D3D12_RECT holes[VR::kMenuFloats]{};
             UINT hole_count = 0;
-            for (const auto& r : menu_floats) {
-                if (r[2] > r[0] && r[3] > r[1]) {
+            for (size_t i = 0; i < menu_floats.size(); ++i) {
+                const auto& r = menu_floats[i];
+                if (r[2] > r[0] && r[3] > r[1] && m_menu_float_shown[i]) {
                     holes[hole_count++] = { (LONG)(r[0] * VR::kMenuStageWidth), (LONG)(r[1] * VR::kMenuStageHeight), (LONG)(r[2] * VR::kMenuStageWidth),
                                             (LONG)(r[3] * VR::kMenuStageHeight) };
                 }
@@ -485,6 +518,46 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
             finish(m_menu_ui_cut);
             draw_ui(m_menu_float_target);
             finish(m_menu_float_target);
+
+            // This frame's coverage of each region, read back next frame.
+            m_menu_coverage_written = false;
+            if (m_menu_coverage_readback != nullptr) {
+                const auto float_desc = m_menu_float_target.texture->GetDesc();
+                for (size_t i = 0; i < menu_floats.size(); ++i) {
+                    const auto& r = menu_floats[i];
+                    if (r[2] <= r[0] || r[3] <= r[1] || !make(m_menu_coverage[i], kCoverageSize, kCoverageSize, L"Menu floating region coverage")) {
+                        continue;
+                    }
+                    auto& cover = m_menu_coverage[i];
+                    const auto to_rt = CD3DX12_RESOURCE_BARRIER::Transition(cover.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                    command_list->ResourceBarrier(1, &to_rt);
+                    const auto rtv = cover.get_rtv();
+                    D3D12_VIEWPORT viewport{ 0.0f, 0.0f, (float)kCoverageSize, (float)kCoverageSize, D3D12_MIN_DEPTH, D3D12_MAX_DEPTH };
+                    D3D12_RECT scissor{ 0, 0, (LONG)kCoverageSize, (LONG)kCoverageSize };
+                    command_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+                    command_list->RSSetViewports(1, &viewport);
+                    command_list->RSSetScissorRects(1, &scissor);
+                    ID3D12DescriptorHeap* heaps[]{ m_menu_float_target.srv_heap->Heap() };
+                    command_list->SetDescriptorHeaps(1, heaps);
+                    m_native_copy_batch->SetViewport(viewport);
+                    m_native_copy_batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
+                    const RECT source{ (LONG)(r[0] * float_desc.Width), (LONG)(r[1] * float_desc.Height), (LONG)(r[2] * float_desc.Width), (LONG)(r[3] * float_desc.Height) };
+                    m_native_copy_batch->Draw(m_menu_float_target.get_srv_gpu(), DirectX::XMUINT2{ (uint32_t)float_desc.Width, (uint32_t)float_desc.Height },
+                                              RECT{ 0, 0, (LONG)kCoverageSize, (LONG)kCoverageSize }, &source, DirectX::Colors::White);
+                    m_native_copy_batch->End();
+                    const auto to_copy = CD3DX12_RESOURCE_BARRIER::Transition(cover.texture.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    command_list->ResourceBarrier(1, &to_copy);
+                    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+                    footprint.Offset = (UINT64)i * kSlot;
+                    footprint.Footprint = { DXGI_FORMAT_R8G8B8A8_UNORM, kCoverageSize, kCoverageSize, 1, kRowPitch };
+                    CD3DX12_TEXTURE_COPY_LOCATION dst{ m_menu_coverage_readback.Get(), footprint };
+                    CD3DX12_TEXTURE_COPY_LOCATION src{ cover.texture.Get(), 0 };
+                    command_list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+                    const auto to_srv = CD3DX12_RESOURCE_BARRIER::Transition(cover.texture.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                    command_list->ResourceBarrier(1, &to_srv);
+                    m_menu_coverage_written = true;
+                }
+            }
 
             // Over the backdrop in each eye, in the menu band.
             for (uint32_t eye = 0; eye < 2; ++eye) {
@@ -510,6 +583,7 @@ void D3D12Component::copy_native_stereo_eyes(VR* vr, ID3D12Resource* backbuffer)
                 command_list->ResourceBarrier(1, &to_srv);
             }
             m_menu_floats_ready = hole_count > 0;
+            vr->set_menu_floats_shown(m_menu_float_shown);
         }
     }
 

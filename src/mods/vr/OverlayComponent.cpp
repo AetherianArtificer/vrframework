@@ -954,9 +954,10 @@ std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_
     const float float_w = (float)float_swapchain.width;
     const float float_h = (float)float_swapchain.height;
     const auto floats = vr->get_menu_floats();
+    const auto shown = vr->get_menu_floats_shown();
     for (size_t i = 0; i < floats.size(); ++i) {
         const auto& r = floats[i];
-        if (r[2] <= r[0] || r[3] <= r[1]) {
+        if (r[2] <= r[0] || r[3] <= r[1] || !shown[i]) {
             continue;
         }
         const int32_t x0 = (int32_t)(r[0] * float_w);

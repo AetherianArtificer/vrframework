@@ -241,6 +241,15 @@ public:
         std::scoped_lock _{ m_wrist_mtx };
         return m_menu_floats;
     }
+    // Which floating regions have transparency, set where the menu's image is made.
+    void set_menu_floats_shown(const std::array<bool, kMenuFloats>& shown) {
+        std::scoped_lock _{ m_wrist_mtx };
+        m_menu_floats_shown = shown;
+    }
+    std::array<bool, kMenuFloats> get_menu_floats_shown() const {
+        std::scoped_lock _{ m_wrist_mtx };
+        return m_menu_floats_shown;
+    }
     // Fullscreen menus are drawn in a centred 16:9 band of the eye image.
     static std::array<int32_t, 4> menu_band(int32_t width, int32_t height) {
         const int32_t band = std::min(height, width * 9 / 16);
@@ -764,6 +773,7 @@ public:
     mutable std::mutex m_wrist_mtx{};
     std::array<WristPanel, kWristPanels> m_wrist_panels{};
     std::array<std::array<float, 4>, kMenuFloats> m_menu_floats{};
+    std::array<bool, kMenuFloats> m_menu_floats_shown{};
     std::wstring m_menu_dump_path{};
     Microsoft::WRL::ComPtr<ID3D12Resource> m_native_menu_scene{};
     int m_native_menu_scene_frame{ -100 };
