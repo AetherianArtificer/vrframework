@@ -885,15 +885,16 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     return layer;
 }
 
-std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_menu_layers(bool flat, bool floats_ready) {
+std::array<XrCompositionLayerBaseHeader*, 2> OverlayComponent::OpenXR::generate_menu_layers(bool flat) {
     auto& vr = VR::get();
-    std::array<XrCompositionLayerBaseHeader*, 5> layers{};
+    std::array<XrCompositionLayerBaseHeader*, 2> layers{};
     if (!flat) {
         m_menu_placed = false;
         return layers;
     }
-    const auto& eye = vr->m_openxr->swapchains[0];
-    if (eye.handle == XR_NULL_HANDLE || eye.width == 0 || eye.height == 0) {
+    const auto& left = vr->m_openxr->swapchains[0];
+    const auto& right = vr->m_openxr->swapchains[1];
+    if (left.handle == XR_NULL_HANDLE || right.handle == XR_NULL_HANDLE || left.width == 0 || left.height == 0) {
         return layers;
     }
 
@@ -905,70 +906,25 @@ std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_
         m_menu_position = glm::vec3{head[3]};
         m_menu_placed = true;
     }
-    const auto facing = glm::rotate(glm::mat4{1.0f}, m_menu_yaw, glm::vec3{0.0f, 1.0f, 0.0f});
-    const auto offset = glm::inverse(vr->get_transform_offset());
+    auto pose = glm::rotate(glm::mat4{1.0f}, m_menu_yaw, glm::vec3{0.0f, 1.0f, 0.0f});
+    pose[3] = glm::vec4{m_menu_position + glm::vec3{pose * glm::vec4{0.0f, 0.0f, -VR::kMenuPanelDistance, 0.0f}}, 1.0f};
+    pose = glm::inverse(vr->get_transform_offset()) * pose;
 
-    // A quad at a distance from the head, its centre at (x, y) on a plane that far ahead, in the menu's frame, turned
-    // to face the head.
-    auto quad = [&](XrCompositionLayerQuad& layer, XrSwapchain swapchain, const XrRect2Di& rect, float distance, float x, float y, float width, float height) {
-        const glm::vec3 local{x, y, -distance};
-        const glm::vec3 back = glm::normalize(-local);
-        const glm::vec3 right = glm::normalize(glm::cross(glm::vec3{0.0f, 1.0f, 0.0f}, back));
-        const glm::vec3 up = glm::cross(back, right);
-        glm::mat4 turn{1.0f};
-        turn[0] = glm::vec4{right, 0.0f};
-        turn[1] = glm::vec4{up, 0.0f};
-        turn[2] = glm::vec4{back, 0.0f};
-        auto pose = facing * turn;
-        pose[3] = glm::vec4{m_menu_position + glm::vec3{facing * glm::vec4{local, 0.0f}}, 1.0f};
-        pose = offset * pose;
+    // The menu's 16:9 band; each eye sees its own image, which carries the menu's depth.
+    const auto band = VR::menu_band((int32_t)left.width, (int32_t)left.height);
+    const float panel_width = VR::menu_panel_width();
+    const float panel_height = panel_width * (float)(band[3] - band[1]) / (float)(band[2] - band[0]);
+    for (int eye = 0; eye < 2; ++eye) {
+        auto& layer = m_menu_panel[eye];
         layer = {XR_TYPE_COMPOSITION_LAYER_QUAD};
         layer.space = vr->m_openxr->stage_space;
-        layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-        layer.subImage.swapchain = swapchain;
-        layer.subImage.imageRect = rect;
+        layer.eyeVisibility = eye == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
+        layer.subImage.swapchain = (eye == 0 ? left : right).handle;
+        layer.subImage.imageRect = XrRect2Di{{band[0], band[1]}, {band[2] - band[0], band[3] - band[1]}};
         layer.pose.orientation = runtimes::OpenXR::to_openxr(glm::normalize(glm::quat_cast(pose)));
         layer.pose.position = runtimes::OpenXR::to_openxr(pose[3]);
-        layer.size = {width, height};
-    };
-
-    // The menu's 16:9 band, 75 degrees wide at 3 m so it reads without turning the head.
-    constexpr float kPanelDistance = 3.0f;
-    const auto band = VR::menu_band((int32_t)eye.width, (int32_t)eye.height);
-    const float band_w = (float)(band[2] - band[0]);
-    const float band_h = (float)(band[3] - band[1]);
-    const float panel_width = 2.0f * kPanelDistance * std::tan(glm::radians(37.5f));
-    const float panel_height = panel_width * band_h / band_w;
-    quad(m_menu_panel, eye.handle, XrRect2Di{{band[0], band[1]}, {band[2] - band[0], band[3] - band[1]}}, kPanelDistance, 0.0f, 0.0f, panel_width, panel_height);
-    layers[0] = (XrCompositionLayerBaseHeader*)&m_menu_panel;
-
-    // Floating regions: scaled toward the head along the lines through their place on the panel, so from where the
-    // head was when the menu opened each covers its place exactly and stands out from it in depth.
-    constexpr float kFloatDistance = 1.6f;
-    const float scale = kFloatDistance / kPanelDistance;
-    int count = 1;
-    const auto& float_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::MENU_FLOAT];
-    if (!floats_ready || float_swapchain.handle == XR_NULL_HANDLE) {
-        return layers;
-    }
-    const float float_w = (float)float_swapchain.width;
-    const float float_h = (float)float_swapchain.height;
-    const auto floats = vr->get_menu_floats();
-    const auto shown = vr->get_menu_floats_shown();
-    for (size_t i = 0; i < floats.size(); ++i) {
-        const auto& r = floats[i];
-        if (r[2] <= r[0] || r[3] <= r[1] || !shown[i]) {
-            continue;
-        }
-        const int32_t x0 = (int32_t)(r[0] * float_w);
-        const int32_t y0 = (int32_t)(r[1] * float_h);
-        const int32_t x1 = (int32_t)(r[2] * float_w);
-        const int32_t y1 = (int32_t)(r[3] * float_h);
-        const float x = ((r[0] + r[2]) * 0.5f - 0.5f) * panel_width * scale;
-        const float y = (0.5f - (r[1] + r[3]) * 0.5f) * panel_height * scale;
-        quad(m_menu_floats[i], float_swapchain.handle, XrRect2Di{{x0, y0}, {x1 - x0, y1 - y0}}, kFloatDistance, x, y, (r[2] - r[0]) * panel_width * scale, (r[3] - r[1]) * panel_height * scale);
-        m_menu_floats[i].layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-        layers[count++] = (XrCompositionLayerBaseHeader*)&m_menu_floats[i];
+        layer.size = {panel_width, panel_height};
+        layers[eye] = (XrCompositionLayerBaseHeader*)&layer;
     }
     return layers;
 }

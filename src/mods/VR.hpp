@@ -209,6 +209,19 @@ public:
         }
         return m_native_ui_source;
     }
+    // A fullscreen menu's UI drawn for the left eye; the UI layer above is then the right eye's. Same state rules.
+    void set_native_ui_source_left(ID3D12Resource* texture) {
+        std::scoped_lock _{ m_eye_source_mutex };
+        m_native_ui_source_left = texture;
+        m_native_ui_source_left_frame = m_engine_frame_count;
+    }
+    Microsoft::WRL::ComPtr<ID3D12Resource> get_native_ui_source_left() {
+        std::scoped_lock _{ m_eye_source_mutex };
+        if (m_engine_frame_count - m_native_ui_source_left_frame > 3) {
+            return nullptr;
+        }
+        return m_native_ui_source_left;
+    }
     // Native stereo can show the game's HUD on a panel in the world instead of over each eye: width and distance in metres.
     void set_native_hud_panel(bool enabled, float width, float distance) {
         m_native_hud_panel = enabled;
@@ -227,29 +240,10 @@ public:
     static constexpr int kWristPanels = 2;
     static constexpr int kWristImageWidth = 1024;
     static constexpr int kWristImageHeight = 512;
-    // Regions of a fullscreen menu, as fractions of its 16:9 band (left, top, right, bottom), shown again on panels of
-    // their own nearer the player, at the same angles as on the menu panel.
-    static constexpr int kMenuFloats = 4;
-    // The floating regions' image: the menu's UI at its 1920x1080 stage size.
-    static constexpr int kMenuStageWidth = 1920;
-    static constexpr int kMenuStageHeight = 1080;
-    void set_menu_floats(const std::array<std::array<float, 4>, kMenuFloats>& floats) {
-        std::scoped_lock _{ m_wrist_mtx };
-        m_menu_floats = floats;
-    }
-    std::array<std::array<float, 4>, kMenuFloats> get_menu_floats() const {
-        std::scoped_lock _{ m_wrist_mtx };
-        return m_menu_floats;
-    }
-    // Which floating regions have transparency, set where the menu's image is made.
-    void set_menu_floats_shown(const std::array<bool, kMenuFloats>& shown) {
-        std::scoped_lock _{ m_wrist_mtx };
-        m_menu_floats_shown = shown;
-    }
-    std::array<bool, kMenuFloats> get_menu_floats_shown() const {
-        std::scoped_lock _{ m_wrist_mtx };
-        return m_menu_floats_shown;
-    }
+    // Fullscreen menus show on a flat panel this far ahead and this many degrees wide.
+    static constexpr float kMenuPanelDistance = 3.0f;
+    static constexpr float kMenuPanelDegrees = 75.0f;
+    static float menu_panel_width() { return 2.0f * kMenuPanelDistance * std::tan(kMenuPanelDegrees * 0.5f * 3.14159265f / 180.0f); }
     // Fullscreen menus are drawn in a centred 16:9 band of the eye image.
     static std::array<int32_t, 4> menu_band(int32_t width, int32_t height) {
         const int32_t band = std::min(height, width * 9 / 16);
@@ -772,8 +766,6 @@ public:
     std::atomic<float> m_native_hud_panel_distance{2.0f};
     mutable std::mutex m_wrist_mtx{};
     std::array<WristPanel, kWristPanels> m_wrist_panels{};
-    std::array<std::array<float, 4>, kMenuFloats> m_menu_floats{};
-    std::array<bool, kMenuFloats> m_menu_floats_shown{};
     std::wstring m_menu_dump_path{};
     Microsoft::WRL::ComPtr<ID3D12Resource> m_native_menu_scene{};
     int m_native_menu_scene_frame{ -100 };
@@ -782,6 +774,8 @@ public:
     std::array<int64_t, 2> m_native_eye_source_frames{ -100, -100 };
     Microsoft::WRL::ComPtr<ID3D12Resource> m_native_ui_source{};
     int64_t m_native_ui_source_frame{ -100 };
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_native_ui_source_left{};
+    int64_t m_native_ui_source_left_frame{ -100 };
     std::mutex m_dump_mutex{};
     std::wstring m_dump_path{};
 
