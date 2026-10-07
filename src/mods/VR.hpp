@@ -209,6 +209,9 @@ public:
         }
         return m_native_ui_source;
     }
+    // A fullscreen menu's 3D scene renders in stereo: each eye's captured image is that eye's backdrop.
+    void set_menu_scene_stereo(bool stereo) { m_menu_scene_stereo = stereo; }
+    bool is_menu_scene_stereo() const { return m_menu_scene_stereo; }
     // A fullscreen menu's UI drawn for the left eye; the UI layer above is then the right eye's. Same state rules.
     void set_native_ui_source_left(ID3D12Resource* texture) {
         std::scoped_lock _{ m_eye_source_mutex };
@@ -774,6 +777,7 @@ public:
     std::array<int64_t, 2> m_native_eye_source_frames{ -100, -100 };
     Microsoft::WRL::ComPtr<ID3D12Resource> m_native_ui_source{};
     int64_t m_native_ui_source_frame{ -100 };
+    std::atomic<bool> m_menu_scene_stereo{false};
     Microsoft::WRL::ComPtr<ID3D12Resource> m_native_ui_source_left{};
     int64_t m_native_ui_source_left_frame{ -100 };
     std::mutex m_dump_mutex{};
