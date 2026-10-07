@@ -885,7 +885,7 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     return layer;
 }
 
-std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_menu_layers(bool flat) {
+std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_menu_layers(bool flat, bool floats_ready) {
     auto& vr = VR::get();
     std::array<XrCompositionLayerBaseHeader*, 5> layers{};
     if (!flat) {
@@ -908,15 +908,24 @@ std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_
     const auto facing = glm::rotate(glm::mat4{1.0f}, m_menu_yaw, glm::vec3{0.0f, 1.0f, 0.0f});
     const auto offset = glm::inverse(vr->get_transform_offset());
 
-    // A quad at a distance from the head, its centre at (x, y) on a plane that far ahead, in the menu's frame.
-    auto quad = [&](XrCompositionLayerQuad& layer, const XrRect2Di& rect, float distance, float x, float y, float width, float height) {
-        auto pose = facing;
-        pose[3] = glm::vec4{m_menu_position + glm::vec3{facing * glm::vec4{x, y, -distance, 0.0f}}, 1.0f};
+    // A quad at a distance from the head, its centre at (x, y) on a plane that far ahead, in the menu's frame, turned
+    // to face the head.
+    auto quad = [&](XrCompositionLayerQuad& layer, XrSwapchain swapchain, const XrRect2Di& rect, float distance, float x, float y, float width, float height) {
+        const glm::vec3 local{x, y, -distance};
+        const glm::vec3 back = glm::normalize(-local);
+        const glm::vec3 right = glm::normalize(glm::cross(glm::vec3{0.0f, 1.0f, 0.0f}, back));
+        const glm::vec3 up = glm::cross(back, right);
+        glm::mat4 turn{1.0f};
+        turn[0] = glm::vec4{right, 0.0f};
+        turn[1] = glm::vec4{up, 0.0f};
+        turn[2] = glm::vec4{back, 0.0f};
+        auto pose = facing * turn;
+        pose[3] = glm::vec4{m_menu_position + glm::vec3{facing * glm::vec4{local, 0.0f}}, 1.0f};
         pose = offset * pose;
         layer = {XR_TYPE_COMPOSITION_LAYER_QUAD};
         layer.space = vr->m_openxr->stage_space;
         layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-        layer.subImage.swapchain = eye.handle;
+        layer.subImage.swapchain = swapchain;
         layer.subImage.imageRect = rect;
         layer.pose.orientation = runtimes::OpenXR::to_openxr(glm::normalize(glm::quat_cast(pose)));
         layer.pose.position = runtimes::OpenXR::to_openxr(pose[3]);
@@ -930,7 +939,7 @@ std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_
     const float band_h = (float)(band[3] - band[1]);
     const float panel_width = 2.0f * kPanelDistance * std::tan(glm::radians(37.5f));
     const float panel_height = panel_width * band_h / band_w;
-    quad(m_menu_panel, XrRect2Di{{band[0], band[1]}, {band[2] - band[0], band[3] - band[1]}}, kPanelDistance, 0.0f, 0.0f, panel_width, panel_height);
+    quad(m_menu_panel, eye.handle, XrRect2Di{{band[0], band[1]}, {band[2] - band[0], band[3] - band[1]}}, kPanelDistance, 0.0f, 0.0f, panel_width, panel_height);
     layers[0] = (XrCompositionLayerBaseHeader*)&m_menu_panel;
 
     // Floating regions: scaled toward the head along the lines through their place on the panel, so from where the
@@ -938,19 +947,26 @@ std::array<XrCompositionLayerBaseHeader*, 5> OverlayComponent::OpenXR::generate_
     constexpr float kFloatDistance = 1.6f;
     const float scale = kFloatDistance / kPanelDistance;
     int count = 1;
+    const auto& float_swapchain = vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::GAME_UI];
+    if (!floats_ready || float_swapchain.handle == XR_NULL_HANDLE) {
+        return layers;
+    }
+    const auto float_band = VR::menu_band((int32_t)float_swapchain.width, (int32_t)float_swapchain.height);
+    const float float_band_w = (float)(float_band[2] - float_band[0]);
+    const float float_band_h = (float)(float_band[3] - float_band[1]);
     const auto floats = vr->get_menu_floats();
     for (size_t i = 0; i < floats.size(); ++i) {
         const auto& r = floats[i];
         if (r[2] <= r[0] || r[3] <= r[1]) {
             continue;
         }
-        const int32_t x0 = band[0] + (int32_t)(r[0] * band_w);
-        const int32_t y0 = band[1] + (int32_t)(r[1] * band_h);
-        const int32_t x1 = band[0] + (int32_t)(r[2] * band_w);
-        const int32_t y1 = band[1] + (int32_t)(r[3] * band_h);
+        const int32_t x0 = float_band[0] + (int32_t)(r[0] * float_band_w);
+        const int32_t y0 = float_band[1] + (int32_t)(r[1] * float_band_h);
+        const int32_t x1 = float_band[0] + (int32_t)(r[2] * float_band_w);
+        const int32_t y1 = float_band[1] + (int32_t)(r[3] * float_band_h);
         const float x = ((r[0] + r[2]) * 0.5f - 0.5f) * panel_width * scale;
         const float y = (0.5f - (r[1] + r[3]) * 0.5f) * panel_height * scale;
-        quad(m_menu_floats[i], XrRect2Di{{x0, y0}, {x1 - x0, y1 - y0}}, kFloatDistance, x, y, (r[2] - r[0]) * panel_width * scale, (r[3] - r[1]) * panel_height * scale);
+        quad(m_menu_floats[i], float_swapchain.handle, XrRect2Di{{x0, y0}, {x1 - x0, y1 - y0}}, kFloatDistance, x, y, (r[2] - r[0]) * panel_width * scale, (r[3] - r[1]) * panel_height * scale);
         layers[count++] = (XrCompositionLayerBaseHeader*)&m_menu_floats[i];
     }
     return layers;

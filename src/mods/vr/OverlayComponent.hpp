@@ -157,7 +157,7 @@ private:
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_wrist_quad(int slot);
         // Fullscreen menus on a flat panel placed where the head looks when the menu opens, with any floating regions
         // in front of it; back to front, empty when not shown.
-        std::array<XrCompositionLayerBaseHeader*, 5> generate_menu_layers(bool flat);
+        std::array<XrCompositionLayerBaseHeader*, 5> generate_menu_layers(bool flat, bool floats_ready);
         
     private:
         XrCompositionLayerQuad m_slate_layer{};
